@@ -1,0 +1,78 @@
+/* ===== METRICS DASHBOARD ===== */
+#metrics-dashboard {
+    background: rgba(0, 0, 0, 0.7);
+    color: #00ff00;
+    font-family: 'Courier New', monospace;
+    padding: 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    border: 1px solid #00ff00;
+    width: 280px;
+}
+
+.metrics-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.metric-item {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 4px 6px;
+    border-radius: 2px;
+    border: 1px solid #00aa00;
+}
+
+.metric-item label {
+    display: block;
+    font-size: 10px;
+    color: #00aa00;
+    font-weight: bold;
+}
+
+.metric-item span {
+    display: block;
+    color: #00ff00;
+    font-weight: bold;
+    font-size: 14px;
+    margin-top: 2px;
+}
+
+/* ===== ROAD NETWORK RENDERING ===== */
+.road-lane {
+    stroke: #666;
+    stroke-width: 3;
+    fill: none;
+}
+
+.road-centerline {
+    stroke: #ffff00;
+    stroke-width: 1;
+    stroke-dasharray: 5,5;
+    fill: none;
+}
+
+.traffic-light {
+    r: 8;
+    filter: drop-shadow(0 0 4px currentColor);
+}
+
+.traffic-light.red { fill: #ff0000; }
+.traffic-light.yellow { fill: #ffff00; }
+.traffic-light.green { fill: #00ff00; }
+
+.sidewalk {
+    fill: #cccccc;
+    opacity: 0.6;
+}
+
+.crosswalk {
+    fill: #ffffff;
+    opacity: 0.8;
+}
+
+.intersection {
+    fill: #999999;
+    opacity: 0.3;
+}

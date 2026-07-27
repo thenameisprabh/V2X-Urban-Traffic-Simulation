@@ -1,0 +1,2181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>V2X Simulation — Mission Control</title>
+  <link rel="stylesheet" href="/static/css/rendering.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* ============================================================
+       DESIGN TOKENS
+    ============================================================ */
+    :root {
+      --bg-void:        #07070D;
+      --bg-base:        #0A0A12;
+      --bg-surface:     rgba(255, 255, 255, 0.03);
+      --bg-surface-hover: rgba(255, 255, 255, 0.06);
+      --bg-elevated:    rgba(255, 255, 255, 0.05);
+
+      --glass-border:   rgba(255, 255, 255, 0.08);
+      --glass-border-strong: rgba(255, 255, 255, 0.14);
+      --glass-blur:     blur(24px);
+      --glass-blur-sm:  blur(12px);
+
+      --accent-cyan:    #00D4FF;
+      --accent-blue:    #0A84FF;
+      --accent-green:   #30D158;
+      --accent-orange:  #FF9F0A;
+      --accent-red:     #FF453A;
+      --accent-purple:  #BF5AF2;
+
+      --text-primary:   rgba(255, 255, 255, 0.95);
+      --text-secondary: rgba(255, 255, 255, 0.55);
+      --text-tertiary:  rgba(255, 255, 255, 0.30);
+      --text-accent:    #00D4FF;
+
+      --radius-sm:      6px;
+      --radius-md:      12px;
+      --radius-lg:      16px;
+      --radius-xl:      20px;
+      --radius-full:    9999px;
+
+      --shadow-glow-cyan:   0 0 20px rgba(0, 212, 255, 0.15);
+      --shadow-glow-blue:   0 0 20px rgba(10, 132, 255, 0.20);
+      --shadow-panel:       0 8px 32px rgba(0, 0, 0, 0.60);
+      --shadow-card:        0 4px 16px rgba(0, 0, 0, 0.40);
+
+      --ease-spring:    cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-out:       cubic-bezier(0.0, 0, 0.2, 1);
+      --duration-fast:  150ms;
+      --duration-base:  250ms;
+      --duration-slow:  400ms;
+
+      --panel-width:    280px;
+      --header-height:  52px;
+      --statusbar-height: 36px;
+    }
+
+    /* ============================================================
+       RESET & BASE
+    ============================================================ */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg-void);
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* ============================================================
+       LAYOUT SHELL
+    ============================================================ */
+    #app {
+      display: grid;
+      grid-template-rows: var(--header-height) 1fr var(--statusbar-height);
+      grid-template-columns: var(--panel-width) 1fr var(--panel-width);
+      width: 100vw;
+      height: 100vh;
+      position: relative;
+    }
+
+    /* ============================================================
+       SIMULATION VIEWPORT — 90% dominance
+    ============================================================ */
+    #simulation-viewport {
+      grid-column: 1 / -1;
+      grid-row: 1 / -1;
+      width: 100%;
+      height: 100%;
+      position: relative;
+      background: var(--bg-void);
+      z-index: 0;
+    }
+
+    /* The actual canvas/simulation container — injected by existing code */
+    #simulation-viewport canvas,
+    #simulation-viewport #sim-canvas {
+      width: 100% !important;
+      height: 100% !important;
+      display: block;
+    }
+
+    /* Subtle grid overlay — gives the viewport a "mission control" feel */
+    #simulation-viewport::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(0, 212, 255, 0.015) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 212, 255, 0.015) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* Vignette — darkens edges so panels float above */
+    #simulation-viewport::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(
+        ellipse 80% 80% at 50% 50%,
+        transparent 40%,
+        rgba(7, 7, 13, 0.75) 100%
+      );
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    /* ============================================================
+       TOP HEADER BAR
+    ============================================================ */
+    #header {
+      grid-column: 1 / -1;
+      grid-row: 1;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      background: rgba(7, 7, 13, 0.70);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border-bottom: 1px solid var(--glass-border);
+      gap: 12px;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+
+    .header-logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .logo-icon {
+      width: 22px;
+      height: 22px;
+      position: relative;
+    }
+
+    .logo-icon svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .logo-title {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--text-primary);
+      text-transform: uppercase;
+    }
+
+    .logo-version {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      letter-spacing: 0.06em;
+      background: rgba(255,255,255,0.06);
+      padding: 2px 6px;
+      border-radius: var(--radius-full);
+      border: 1px solid var(--glass-border);
+    }
+
+    .header-divider {
+      width: 1px;
+      height: 20px;
+      background: var(--glass-border);
+    }
+
+    /* Scenario selector pill */
+    .scenario-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-surface);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-full);
+      padding: 4px 10px 4px 8px;
+      cursor: pointer;
+      transition: all var(--duration-fast) var(--ease-out);
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .scenario-pill:hover {
+      background: var(--bg-surface-hover);
+      border-color: var(--glass-border-strong);
+      color: var(--text-primary);
+    }
+    .scenario-pill .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      box-shadow: 0 0 6px var(--accent-green);
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+
+    /* Header center — sim stats */
+    .header-center {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      flex: 1;
+      justify-content: center;
+    }
+
+    .header-stat {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 4px 14px;
+      border-radius: var(--radius-sm);
+      transition: background var(--duration-fast) var(--ease-out);
+      cursor: default;
+    }
+    .header-stat:hover {
+      background: var(--bg-surface-hover);
+    }
+    .header-stat-value {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+    .header-stat-value.accent-cyan { color: var(--accent-cyan); }
+    .header-stat-value.accent-green { color: var(--accent-green); }
+    .header-stat-value.accent-orange { color: var(--accent-orange); }
+    .header-stat-label {
+      font-size: 9px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-top: 1px;
+    }
+
+    .header-stat-sep {
+      width: 1px;
+      height: 28px;
+      background: var(--glass-border);
+      margin: 0 4px;
+    }
+
+    /* Header right */
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .header-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--duration-fast) var(--ease-out);
+    }
+    .header-btn:hover {
+      background: var(--bg-surface-hover);
+      border-color: var(--glass-border);
+      color: var(--text-primary);
+    }
+    .header-btn svg {
+      width: 15px;
+      height: 15px;
+    }
+
+    /* ============================================================
+       FLOATING PANELS — Left & Right
+    ============================================================ */
+    .floating-panel {
+      position: absolute;
+      z-index: 50;
+      background: rgba(10, 10, 18, 0.78);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-panel);
+      overflow: hidden;
+      transition: transform var(--duration-slow) var(--ease-spring),
+                  opacity var(--duration-slow) var(--ease-spring);
+    }
+
+    /* Left panel — Controls */
+    #panel-controls {
+      top: calc(var(--header-height) + 12px);
+      left: 12px;
+      width: var(--panel-width);
+      max-height: calc(100vh - var(--header-height) - var(--statusbar-height) - 24px);
+      overflow-y: auto;
+      scrollbar-width: none;
+    }
+    #panel-controls::-webkit-scrollbar { display: none; }
+
+    /* Right panel — Telemetry */
+    #panel-telemetry {
+      top: calc(var(--header-height) + 12px);
+      right: 12px;
+      width: var(--panel-width);
+      max-height: calc(100vh - var(--header-height) - var(--statusbar-height) - 24px);
+      overflow-y: auto;
+      scrollbar-width: none;
+    }
+    #panel-telemetry::-webkit-scrollbar { display: none; }
+
+    /* Panel collapse state */
+    .floating-panel.collapsed {
+      transform: translateX(-110%);
+      opacity: 0;
+      pointer-events: none;
+    }
+    #panel-telemetry.collapsed {
+      transform: translateX(110%);
+    }
+
+    /* Panel Header */
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid var(--glass-border);
+    }
+
+    .panel-title-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+    }
+
+    .panel-icon.cyan {
+      background: rgba(0, 212, 255, 0.10);
+      border: 1px solid rgba(0, 212, 255, 0.20);
+    }
+    .panel-icon.blue {
+      background: rgba(10, 132, 255, 0.10);
+      border: 1px solid rgba(10, 132, 255, 0.20);
+    }
+
+    .panel-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      letter-spacing: 0.02em;
+    }
+    .panel-subtitle {
+      font-size: 10px;
+      color: var(--text-tertiary);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .panel-collapse-btn {
+      width: 22px;
+      height: 22px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--glass-border);
+      background: transparent;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--duration-fast) var(--ease-out);
+    }
+    .panel-collapse-btn:hover {
+      background: var(--bg-surface-hover);
+      color: var(--text-primary);
+    }
+
+    /* Panel Body */
+    .panel-body {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* ============================================================
+       PANEL SECTIONS
+    ============================================================ */
+    .panel-section {
+      background: var(--bg-surface);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+
+    .section-label {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-tertiary);
+      padding: 10px 12px 6px;
+    }
+
+    .section-content {
+      padding: 0 12px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* ============================================================
+       CONTROL COMPONENTS
+    ============================================================ */
+
+    /* Labeled slider */
+    .control-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .control-label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .control-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    .control-value {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-accent);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Custom Slider */
+    .v2x-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 3px;
+      background: rgba(255,255,255,0.08);
+      border-radius: var(--radius-full);
+      outline: none;
+      cursor: pointer;
+      transition: background var(--duration-fast);
+    }
+    .v2x-slider:hover {
+      background: rgba(255,255,255,0.12);
+    }
+    .v2x-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent-cyan);
+      box-shadow: 0 0 8px rgba(0, 212, 255, 0.5), 0 0 0 2px rgba(0,212,255,0.15);
+      cursor: pointer;
+      transition: transform var(--duration-fast) var(--ease-spring),
+                  box-shadow var(--duration-fast);
+    }
+    .v2x-slider::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+      box-shadow: 0 0 12px rgba(0, 212, 255, 0.7), 0 0 0 3px rgba(0,212,255,0.20);
+    }
+    .v2x-slider::-webkit-slider-thumb:active {
+      transform: scale(1.1);
+    }
+    .v2x-slider::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent-cyan);
+      border: none;
+      box-shadow: 0 0 8px rgba(0,212,255,0.5);
+      cursor: pointer;
+    }
+
+    /* Accent color variants */
+    .v2x-slider.blue::-webkit-slider-thumb {
+      background: var(--accent-blue);
+      box-shadow: 0 0 8px rgba(10,132,255,0.5), 0 0 0 2px rgba(10,132,255,0.15);
+    }
+    .v2x-slider.green::-webkit-slider-thumb {
+      background: var(--accent-green);
+      box-shadow: 0 0 8px rgba(48,209,88,0.5), 0 0 0 2px rgba(48,209,88,0.15);
+    }
+
+    /* Toggle Switch */
+    .toggle-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .toggle-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+    .toggle-switch {
+      position: relative;
+      width: 32px;
+      height: 18px;
+      flex-shrink: 0;
+    }
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+      position: absolute;
+    }
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      background: rgba(255,255,255,0.10);
+      border-radius: var(--radius-full);
+      border: 1px solid var(--glass-border);
+      cursor: pointer;
+      transition: background var(--duration-fast) var(--ease-out);
+    }
+    .toggle-track::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.40);
+      transition: transform var(--duration-base) var(--ease-spring),
+                  background var(--duration-fast);
+    }
+    .toggle-switch input:checked + .toggle-track {
+      background: var(--accent-cyan);
+      border-color: var(--accent-cyan);
+    }
+    .toggle-switch input:checked + .toggle-track::after {
+      transform: translateX(14px);
+      background: #fff;
+    }
+
+    /* Select */
+    .v2x-select {
+      width: 100%;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 6px 10px;
+      appearance: none;
+      -webkit-appearance: none;
+      cursor: pointer;
+      outline: none;
+      transition: border-color var(--duration-fast), background var(--duration-fast);
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='rgba(255,255,255,0.3)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 28px;
+    }
+    .v2x-select:hover {
+      border-color: var(--glass-border-strong);
+      background-color: rgba(255,255,255,0.06);
+    }
+    .v2x-select:focus {
+      border-color: rgba(0,212,255,0.4);
+      box-shadow: 0 0 0 2px rgba(0,212,255,0.08);
+    }
+    .v2x-select option {
+      background: #12121C;
+      color: var(--text-primary);
+    }
+
+    /* Button */
+    .v2x-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      padding: 8px 12px;
+      border-radius: var(--radius-md);
+      border: 1px solid transparent;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all var(--duration-fast) var(--ease-out);
+      letter-spacing: 0.01em;
+    }
+
+    .v2x-btn-primary {
+      background: var(--accent-cyan);
+      color: #000;
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 16px rgba(0,212,255,0.25);
+    }
+    .v2x-btn-primary:hover {
+      background: #1DDCFF;
+      box-shadow: 0 0 24px rgba(0,212,255,0.40);
+      transform: translateY(-1px);
+    }
+    .v2x-btn-primary:active {
+      transform: translateY(0);
+      box-shadow: 0 0 12px rgba(0,212,255,0.20);
+    }
+
+    .v2x-btn-secondary {
+      background: var(--bg-surface);
+      color: var(--text-secondary);
+      border-color: var(--glass-border);
+    }
+    .v2x-btn-secondary:hover {
+      background: var(--bg-surface-hover);
+      border-color: var(--glass-border-strong);
+      color: var(--text-primary);
+    }
+
+    .v2x-btn-danger {
+      background: rgba(255, 69, 58, 0.12);
+      color: var(--accent-red);
+      border-color: rgba(255, 69, 58, 0.25);
+    }
+    .v2x-btn-danger:hover {
+      background: rgba(255, 69, 58, 0.20);
+      border-color: rgba(255, 69, 58, 0.40);
+    }
+
+    /* Segmented control */
+    .segmented-control {
+      display: flex;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-md);
+      padding: 3px;
+      gap: 2px;
+    }
+    .seg-btn {
+      flex: 1;
+      padding: 5px 8px;
+      border-radius: var(--radius-sm);
+      border: none;
+      background: transparent;
+      color: var(--text-tertiary);
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all var(--duration-fast) var(--ease-spring);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .seg-btn.active {
+      background: rgba(0,212,255,0.15);
+      color: var(--accent-cyan);
+      border: 1px solid rgba(0,212,255,0.25);
+    }
+    .seg-btn:hover:not(.active) {
+      background: var(--bg-surface-hover);
+      color: var(--text-secondary);
+    }
+
+    /* ============================================================
+       TELEMETRY COMPONENTS
+    ============================================================ */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .metric-card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-md);
+      padding: 10px;
+      position: relative;
+      overflow: hidden;
+      transition: border-color var(--duration-fast), background var(--duration-fast);
+    }
+    .metric-card:hover {
+      background: rgba(255,255,255,0.05);
+      border-color: var(--glass-border-strong);
+    }
+    .metric-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(0,212,255,0.3), transparent);
+      opacity: 0;
+      transition: opacity var(--duration-base);
+    }
+    .metric-card:hover::before { opacity: 1; }
+
+    .metric-card-label {
+      font-size: 9px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-tertiary);
+      margin-bottom: 4px;
+    }
+    .metric-card-value {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      color: var(--text-primary);
+    }
+    .metric-card-unit {
+      font-size: 9px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      margin-top: 2px;
+    }
+
+    /* Full-width metric */
+    .metric-card.full {
+      grid-column: 1 / -1;
+    }
+    .metric-card.accent-cyan { border-color: rgba(0,212,255,0.20); }
+    .metric-card.accent-cyan .metric-card-value { color: var(--accent-cyan); }
+    .metric-card.accent-green { border-color: rgba(48,209,88,0.20); }
+    .metric-card.accent-green .metric-card-value { color: var(--accent-green); }
+    .metric-card.accent-orange { border-color: rgba(255,159,10,0.20); }
+    .metric-card.accent-orange .metric-card-value { color: var(--accent-orange); }
+
+    /* Mini sparkline bar */
+    .mini-bar-track {
+      height: 3px;
+      background: rgba(255,255,255,0.06);
+      border-radius: var(--radius-full);
+      margin-top: 6px;
+      overflow: hidden;
+    }
+    .mini-bar-fill {
+      height: 100%;
+      border-radius: var(--radius-full);
+      background: var(--accent-cyan);
+      transition: width 0.8s var(--ease-spring);
+    }
+    .mini-bar-fill.green { background: var(--accent-green); }
+    .mini-bar-fill.orange { background: var(--accent-orange); }
+    .mini-bar-fill.red { background: var(--accent-red); }
+
+    /* ============================================================
+       EVENT LOG
+    ============================================================ */
+    .event-log {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      max-height: 120px;
+      overflow-y: auto;
+      scrollbar-width: none;
+    }
+    .event-log::-webkit-scrollbar { display: none; }
+
+    .event-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      padding: 5px 8px;
+      border-radius: var(--radius-sm);
+      background: rgba(255,255,255,0.02);
+      border: 1px solid transparent;
+      animation: event-slide-in var(--duration-base) var(--ease-spring);
+      transition: background var(--duration-fast);
+    }
+    .event-item:hover {
+      background: rgba(255,255,255,0.04);
+      border-color: var(--glass-border);
+    }
+
+    .event-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      margin-top: 4px;
+      flex-shrink: 0;
+    }
+    .event-dot.cyan { background: var(--accent-cyan); box-shadow: 0 0 4px var(--accent-cyan); }
+    .event-dot.green { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
+    .event-dot.orange { background: var(--accent-orange); box-shadow: 0 0 4px var(--accent-orange); }
+    .event-dot.red { background: var(--accent-red); box-shadow: 0 0 4px var(--accent-red); }
+
+    .event-text {
+      font-size: 10px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+    .event-time {
+      font-size: 9px;
+      color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+
+    /* ============================================================
+       VEHICLE LIST
+    ============================================================ */
+    .vehicle-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .vehicle-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: var(--radius-md);
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all var(--duration-fast) var(--ease-out);
+    }
+    .vehicle-item:hover {
+      background: var(--bg-surface-hover);
+      border-color: var(--glass-border);
+    }
+    .vehicle-item.selected {
+      background: rgba(0,212,255,0.07);
+      border-color: rgba(0,212,255,0.20);
+    }
+
+    .vehicle-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .vehicle-avatar.ev { background: rgba(0,212,255,0.10); border: 1px solid rgba(0,212,255,0.20); }
+    .vehicle-avatar.truck { background: rgba(255,159,10,0.10); border: 1px solid rgba(255,159,10,0.20); }
+    .vehicle-avatar.emergency { background: rgba(255,69,58,0.10); border: 1px solid rgba(255,69,58,0.20); }
+    .vehicle-avatar.bike { background: rgba(48,209,88,0.10); border: 1px solid rgba(48,209,88,0.20); }
+
+    .vehicle-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .vehicle-id {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .vehicle-type {
+      font-size: 9px;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .vehicle-speed {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-accent);
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+
+    /* Status badge */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 2px 6px;
+      border-radius: var(--radius-full);
+    }
+    .status-badge.active {
+      background: rgba(48,209,88,0.12);
+      color: var(--accent-green);
+      border: 1px solid rgba(48,209,88,0.25);
+    }
+    .status-badge.warning {
+      background: rgba(255,159,10,0.12);
+      color: var(--accent-orange);
+      border: 1px solid rgba(255,159,10,0.25);
+    }
+    .status-badge.critical {
+      background: rgba(255,69,58,0.12);
+      color: var(--accent-red);
+      border: 1px solid rgba(255,69,58,0.25);
+    }
+
+    /* ============================================================
+       FLOATING MINI PANELS (HUD overlays on viewport)
+    ============================================================ */
+    .hud-overlay {
+      position: absolute;
+      z-index: 20;
+      pointer-events: none;
+    }
+
+    /* Bottom center — Playback controls */
+    #playback-controls {
+      bottom: calc(var(--statusbar-height) + 16px);
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(10, 10, 18, 0.82);
+      backdrop-filter: var(--glass-blur-sm);
+      -webkit-backdrop-filter: var(--glass-blur-sm);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-full);
+      padding: 6px 14px;
+      pointer-events: all;
+      box-shadow: var(--shadow-card);
+    }
+
+    .playback-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--duration-fast) var(--ease-out);
+    }
+    .playback-btn:hover {
+      background: var(--bg-surface-hover);
+      border-color: var(--glass-border);
+      color: var(--text-primary);
+    }
+    .playback-btn.primary {
+      width: 36px;
+      height: 36px;
+      background: var(--accent-cyan);
+      color: #000;
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 12px rgba(0,212,255,0.30);
+    }
+    .playback-btn.primary:hover {
+      background: #1DDCFF;
+      box-shadow: 0 0 20px rgba(0,212,255,0.50);
+    }
+    .playback-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+    .playback-btn.primary svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .playback-sep {
+      width: 1px;
+      height: 20px;
+      background: var(--glass-border);
+      margin: 0 4px;
+    }
+
+    .speed-control {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      padding: 0 4px;
+    }
+    .speed-val {
+      color: var(--text-accent);
+      font-variant-numeric: tabular-nums;
+      min-width: 28px;
+      text-align: center;
+    }
+
+    /* Time scrubber */
+    .time-scrubber {
+      width: 120px;
+      height: 3px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: rgba(255,255,255,0.10);
+      border-radius: var(--radius-full);
+      outline: none;
+      cursor: pointer;
+    }
+    .time-scrubber::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent-cyan);
+      box-shadow: 0 0 6px rgba(0,212,255,0.5);
+    }
+
+    /* Top-right mini HUD — map type toggle */
+    #map-hud {
+      top: calc(var(--header-height) + 12px);
+      right: calc(var(--panel-width) + 24px);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      pointer-events: all;
+    }
+
+    .hud-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--glass-border);
+      background: rgba(10, 10, 18, 0.80);
+      backdrop-filter: var(--glass-blur-sm);
+      -webkit-backdrop-filter: var(--glass-blur-sm);
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all var(--duration-fast) var(--ease-out);
+      font-size: 14px;
+    }
+    .hud-btn:hover {
+      background: rgba(10, 10, 18, 0.95);
+      border-color: var(--glass-border-strong);
+      color: var(--text-primary);
+    }
+    .hud-btn.active {
+      background: rgba(0,212,255,0.12);
+      border-color: rgba(0,212,255,0.30);
+      color: var(--accent-cyan);
+    }
+
+    /* Bottom-left — Mini legend */
+    #legend-hud {
+      bottom: calc(var(--statusbar-height) + 16px);
+      left: calc(var(--panel-width) + 24px);
+      pointer-events: all;
+    }
+    .legend-panel {
+      background: rgba(10, 10, 18, 0.80);
+      backdrop-filter: var(--glass-blur-sm);
+      -webkit-backdrop-filter: var(--glass-blur-sm);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-md);
+      padding: 8px 12px;
+      display: flex;
+      gap: 12px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      color: var(--text-tertiary);
+    }
+    .legend-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ============================================================
+       STATUS BAR
+    ============================================================ */
+    #status-bar {
+      grid-column: 1 / -1;
+      grid-row: 3;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      background: rgba(7, 7, 13, 0.85);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border-top: 1px solid var(--glass-border);
+      gap: 16px;
+    }
+
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      color: var(--text-tertiary);
+    }
+    .status-item .dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      box-shadow: 0 0 4px var(--accent-green);
+    }
+    .status-item .dot.orange {
+      background: var(--accent-orange);
+      box-shadow: 0 0 4px var(--accent-orange);
+    }
+    .status-item strong {
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+    .status-sep {
+      width: 1px;
+      height: 12px;
+      background: var(--glass-border);
+    }
+    .status-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* ============================================================
+       PANEL TOGGLE PILLS — visible when panels are hidden
+    ============================================================ */
+    .panel-toggle-pill {
+      position: absolute;
+      z-index: 60;
+      top: calc(var(--header-height) + 12px);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(10, 10, 18, 0.80);
+      backdrop-filter: var(--glass-blur-sm);
+      -webkit-backdrop-filter: var(--glass-blur-sm);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-full);
+      padding: 5px 10px;
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      transition: all var(--duration-fast) var(--ease-out);
+      pointer-events: all;
+      opacity: 0;
+    }
+    .panel-toggle-pill:hover {
+      background: rgba(10, 10, 18, 0.95);
+      border-color: var(--glass-border-strong);
+      color: var(--text-primary);
+    }
+    .panel-toggle-pill.left { left: 12px; }
+    .panel-toggle-pill.right { right: 12px; }
+    .panel-toggle-pill.visible { opacity: 1; }
+
+    /* ============================================================
+       NOTIFICATION TOAST
+    ============================================================ */
+    #toast-container {
+      position: absolute;
+      top: calc(var(--header-height) + 12px);
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      pointer-events: none;
+    }
+
+    .toast {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(10, 10, 18, 0.92);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-full);
+      padding: 7px 14px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-primary);
+      box-shadow: var(--shadow-card);
+      white-space: nowrap;
+      animation: toast-in var(--duration-slow) var(--ease-spring) forwards;
+    }
+    .toast.out {
+      animation: toast-out var(--duration-base) var(--ease-out) forwards;
+    }
+    .toast-icon { font-size: 12px; }
+
+    /* ============================================================
+       ANIMATIONS
+    ============================================================ */
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(0.8); }
+    }
+
+    @keyframes event-slide-in {
+      from { opacity: 0; transform: translateX(-6px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(-8px) scale(0.96); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes toast-out {
+      from { opacity: 1; transform: translateY(0) scale(1); }
+      to { opacity: 0; transform: translateY(-6px) scale(0.96); }
+    }
+
+    @keyframes glow-pulse {
+      0%, 100% { box-shadow: 0 0 8px rgba(0,212,255,0.2); }
+      50% { box-shadow: 0 0 20px rgba(0,212,255,0.5); }
+    }
+
+    @keyframes scan-line {
+      from { transform: translateY(0); }
+      to { transform: translateY(100%); }
+    }
+
+    /* Panel entrance animation */
+    @keyframes panel-enter {
+      from { opacity: 0; transform: translateX(-16px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes panel-enter-right {
+      from { opacity: 0; transform: translateX(16px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    #panel-controls { animation: panel-enter var(--duration-slow) var(--ease-spring); }
+    #panel-telemetry { animation: panel-enter-right var(--duration-slow) var(--ease-spring); }
+
+    /* ============================================================
+       RESPONSIVE
+    ============================================================ */
+    @media (max-width: 1200px) {
+      :root { --panel-width: 240px; }
+    }
+
+    @media (max-width: 900px) {
+      :root { --panel-width: 220px; }
+      .header-stat { padding: 4px 8px; }
+      .metric-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 700px) {
+      #panel-controls, #panel-telemetry {
+        width: calc(100vw - 24px);
+        max-height: 45vh;
+      }
+      #panel-telemetry {
+        top: auto;
+        bottom: calc(var(--statusbar-height) + 52px);
+        right: 12px;
+        left: 12px;
+        width: calc(100vw - 24px);
+      }
+      .header-center { display: none; }
+    }
+
+    /* ============================================================
+       CUSTOM SCROLLBAR
+    ============================================================ */
+    ::-webkit-scrollbar {
+      width: 3px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.10);
+      border-radius: var(--radius-full);
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255,255,255,0.20);
+    }
+
+    /* ============================================================
+       UTILITY
+    ============================================================ */
+    .flex { display: flex; }
+    .items-center { align-items: center; }
+    .gap-6 { gap: 6px; }
+    .mt-4 { margin-top: 4px; }
+    .w-full { width: 100%; }
+  </style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ========================================================
+       SIMULATION VIEWPORT (Your existing canvas goes here)
+  ======================================================== -->
+  <div id="simulation-viewport">
+    <!--
+      ✅ DROP YOUR EXISTING SIMULATION CANVAS / RENDERER HERE.
+      Replace this placeholder with your real sim container.
+      Nothing inside changes — only the UI around it does.
+    -->
+    <canvas id="sim-canvas"></canvas>
+    <canvas id="map-canvas"></canvas>
+
+    <div id="atmos-overlay"></div>
+
+    <!-- HUD Overlays -->
+    <div class="hud-overlay" id="map-hud">
+      <button class="hud-btn active" title="Standard View">🗺</button>
+      <button class="hud-btn" title="Satellite View">🛰</button>
+      <button class="hud-btn" title="Heat Map">🌡</button>
+      <button class="hud-btn" title="Signal View">📡</button>
+    </div>
+
+    <div class="hud-overlay" id="legend-hud">
+      <div class="legend-panel">
+        <div class="legend-item">
+          <div class="legend-dot" style="background:var(--accent-cyan)"></div>
+          EV / CAV
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background:var(--accent-orange)"></div>
+          RSU Zone
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background:var(--accent-red)"></div>
+          Alert
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background:var(--accent-green)"></div>
+          V2V Link
+        </div>
+        <div class="legend-item">
+          <div class="legend-dot" style="background:var(--accent-purple)"></div>
+          V2I Link
+        </div>
+      </div>
+    </div>
+
+    <!-- Playback Controls -->
+    <div class="hud-overlay" id="playback-controls">
+      <button class="playback-btn" id="btn-prev" title="Step Back">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 3h2v10H3zM5.5 8L13 3v10z"/></svg>
+      </button>
+      <button class="playback-btn primary" id="btn-play" title="Play / Pause">
+        <svg viewBox="0 0 16 16" fill="currentColor" id="play-icon"><path d="M5 3l9 5-9 5V3z"/></svg>
+      </button>
+      <button class="playback-btn" id="btn-next" title="Step Forward">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M11 3h2v10h-2zM10.5 8L3 13V3z"/></svg>
+      </button>
+
+      <div class="playback-sep"></div>
+
+      <div class="speed-control">
+        <button class="playback-btn" id="btn-speed-down" style="width:20px;height:20px;">
+          <svg viewBox="0 0 12 12" fill="currentColor"><path d="M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <span class="speed-val" id="speed-display">1×</span>
+        <button class="playback-btn" id="btn-speed-up" style="width:20px;height:20px;">
+          <svg viewBox="0 0 12 12" fill="currentColor"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <div class="playback-sep"></div>
+
+      <input type="range" class="time-scrubber" id="time-scrubber" min="0" max="100" value="0" />
+
+      <div class="playback-sep"></div>
+
+      <span style="font-size:10px;color:var(--text-tertiary);font-variant-numeric:tabular-nums;" id="time-display">00:00</span>
+    </div>
+
+  </div><!-- /simulation-viewport -->
+
+
+  <!-- ========================================================
+       TOP HEADER
+  ======================================================== -->
+  <header id="header">
+    <div class="header-left">
+      <div class="header-logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"
+                  stroke="#00D4FF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <span class="logo-title">V2X</span>
+        <span class="logo-version">v2.0</span>
+      </div>
+
+      <div class="header-divider"></div>
+
+      <div class="scenario-pill" id="scenario-selector">
+        <div class="dot"></div>
+        <span id="scenario-name">Urban Intersection</span>
+        <svg width="10" height="6" viewBox="0 0 10 6" fill="none">
+          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Center Stats -->
+    <div class="header-center">
+      <div class="header-stat">
+        <span class="header-stat-value accent-cyan" id="stat-vehicles">24</span>
+        <span class="header-stat-label">Vehicles</span>
+      </div>
+      <div class="header-stat-sep"></div>
+      <div class="header-stat">
+        <span class="header-stat-value" id="stat-rsu">8</span>
+        <span class="header-stat-label">RSU Active</span>
+      </div>
+      <div class="header-stat-sep"></div>
+      <div class="header-stat">
+        <span class="header-stat-value accent-green" id="stat-msgs">1,247</span>
+        <span class="header-stat-label">Msgs/s</span>
+      </div>
+      <div class="header-stat-sep"></div>
+      <div class="header-stat">
+        <span class="header-stat-value accent-orange" id="stat-latency">12ms</span>
+        <span class="header-stat-label">Latency</span>
+      </div>
+      <div class="header-stat-sep"></div>
+      <div class="header-stat">
+        <span class="header-stat-value" id="stat-pdr">98.4%</span>
+        <span class="header-stat-label">PDR</span>
+      </div>
+    </div>
+
+    <!-- Right controls -->
+    <div class="header-right">
+      <button class="header-btn" id="btn-toggle-left" title="Toggle Controls Panel">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="1" y="1" width="14" height="14" rx="2"/>
+          <path d="M5 1v14"/>
+        </svg>
+      </button>
+      <button class="header-btn" id="btn-toggle-right" title="Toggle Telemetry Panel">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="1" y="1" width="14" height="14" rx="2"/>
+          <path d="M11 1v14"/>
+        </svg>
+      </button>
+      <div class="header-divider"></div>
+      <button class="header-btn" id="btn-screenshot" title="Screenshot">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M1 5V4a2 2 0 012-2h1l1-1h4l1 1h1a2 2 0 012 2v8a2 2 0 01-2 2H3a2 2 0 01-2-2V5z"/>
+          <circle cx="8" cy="9" r="2.5"/>
+        </svg>
+      </button>
+      <button class="header-btn" id="btn-fullscreen" title="Fullscreen">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M1 6V2h4M15 6V2h-4M1 10v4h4M15 10v4h-4"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+
+  <!-- ========================================================
+       LEFT PANEL — Simulation Controls
+  ======================================================== -->
+  <div class="floating-panel" id="panel-controls">
+    <div class="panel-header">
+      <div class="panel-title-group">
+        <div class="panel-icon cyan">⚙️</div>
+        <div>
+          <div class="panel-title">Sim Controls</div>
+          <div class="panel-subtitle">Parameters</div>
+        </div>
+      </div>
+      <button class="panel-collapse-btn" id="close-left">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M1 1l8 8M9 1L1 9"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="panel-body">
+
+      <!-- Scenario -->
+      <div class="panel-section">
+        <div class="section-label">Scenario</div>
+        <div class="section-content">
+          <select class="v2x-select" id="ctrl-scenario">
+            <option>Urban Intersection</option>
+            <option>Highway Merging</option>
+            <option>Emergency Corridor</option>
+            <option>Roundabout</option>
+            <option>Custom Import</option>
+          </select>
+          <div class="segmented-control">
+            <button class="seg-btn active" data-mode="v2v">V2V</button>
+            <button class="seg-btn" data-mode="v2i">V2I</button>
+            <button class="seg-btn" data-mode="v2x">V2X</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Traffic -->
+      <div class="panel-section">
+        <div class="section-label">Traffic</div>
+        <div class="section-content">
+          <div class="control-row">
+            <div class="control-label-row">
+              <span class="control-label">Vehicle Density</span>
+              <span class="control-value" id="val-density">24</span>
+            </div>
+            <input type="range" class="v2x-slider" id="ctrl-density" min="1" max="100" value="24" />
+          </div>
+          <div class="control-row">
+            <div class="control-label-row">
+              <span class="control-label">Avg. Speed</span>
+              <span class="control-value" id="val-speed">60 km/h</span>
+            </div>
+            <input type="range" class="v2x-slider blue" id="ctrl-speed" min="10" max="140" value="60" />
+          </div>
+          <div class="control-row">
+            <div class="control-label-row">
+              <span class="control-label">CAV Penetration</span>
+              <span class="control-value" id="val-cav">65%</span>
+            </div>
+            <input type="range" class="v2x-slider green" id="ctrl-cav" min="0" max="100" value="65" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Communication -->
+      <div class="panel-section">
+        <div class="section-label">Communication</div>
+        <div class="section-content">
+          <div class="control-row">
+            <div class="control-label-row">
+              <span class="control-label">DSRC Range</span>
+              <span class="control-value" id="val-range">300m</span>
+            </div>
+            <input type="range" class="v2x-slider" id="ctrl-range" min="50" max="1000" value="300" />
+          </div>
+          <div class="control-row">
+            <div class="control-label-row">
+              <span class="control-label">Channel Noise</span>
+              <span class="control-value" id="val-noise">5%</span>
+            </div>
+            <input type="range" class="v2x-slider" id="ctrl-noise" min="0" max="100" value="5" />
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">5G-NR Mode</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-5g" />
+              <div class="toggle-track"></div>
+            </label>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">DSRC (802.11p)</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-dsrc" checked />
+              <div class="toggle-track"></div>
+            </label>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">C-V2X (PC5)</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-cv2x" />
+              <div class="toggle-track"></div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Safety -->
+      <div class="panel-section">
+        <div class="section-label">Safety Events</div>
+        <div class="section-content">
+          <div class="toggle-row">
+            <span class="toggle-label">Collision Warnings</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-collision" checked />
+              <div class="toggle-track"></div>
+            </label>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Emergency Preemption</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-emergency" checked />
+              <div class="toggle-track"></div>
+            </label>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Road Hazard Alerts</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-hazard" />
+              <div class="toggle-track"></div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="flex gap-6" style="padding: 0 4px;">
+        <button class="v2x-btn v2x-btn-primary" id="btn-apply">
+          ▶ Apply
+        </button>
+        <button class="v2x-btn v2x-btn-secondary" id="btn-reset" style="width:auto;padding:8px 14px;">
+          ↺
+        </button>
+      </div>
+      <button class="v2x-btn v2x-btn-danger" id="btn-inject">
+        ⚡ Inject Event
+      </button>
+
+    </div>
+  </div>
+
+
+  <!-- ========================================================
+       RIGHT PANEL — Telemetry & Analytics
+  ======================================================== -->
+  <div class="floating-panel" id="panel-telemetry">
+    <div class="panel-header">
+      <div class="panel-title-group">
+        <div class="panel-icon blue">📡</div>
+        <div>
+          <div class="panel-title">Telemetry</div>
+          <div class="panel-subtitle">Live Analytics</div>
+        </div>
+      </div>
+      <button class="panel-collapse-btn" id="close-right">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M1 1l8 8M9 1L1 9"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="panel-body">
+
+      <!-- KPI Metrics -->
+      <div class="panel-section">
+        <div class="section-label">Network KPIs</div>
+        <div class="section-content">
+          <div class="metric-grid">
+            <div class="metric-card accent-cyan">
+              <div class="metric-card-label">PDR</div>
+              <div class="metric-card-value" id="kpi-pdr">98.4</div>
+              <div class="metric-card-unit">Packet Delivery %</div>
+              <div class="mini-bar-track"><div class="mini-bar-fill" id="bar-pdr" style="width:98.4%"></div></div>
+            </div>
+            <div class="metric-card accent-orange">
+              <div class="metric-card-label">Latency</div>
+              <div class="metric-card-value" id="kpi-latency">12</div>
+              <div class="metric-card-unit">Milliseconds</div>
+              <div class="mini-bar-track"><div class="mini-bar-fill orange" id="bar-latency" style="width:12%"></div></div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-card-label">Throughput</div>
+              <div class="metric-card-value" id="kpi-throughput">2.4</div>
+              <div class="metric-card-unit">Mbps</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-card-label">Collision Risk</div>
+              <div class="metric-card-value" id="kpi-risk">0.3</div>
+              <div class="metric-card-unit">Index</div>
+            </div>
+            <div class="metric-card full accent-green">
+              <div class="metric-card-label">Message Rate</div>
+              <div class="metric-card-value" id="kpi-msgs">1,247</div>
+              <div class="metric-card-unit">Msgs/sec (BSM + SPaT + RSA)</div>
+              <div class="mini-bar-track"><div class="mini-bar-fill green" id="bar-msgs" style="width:62%"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Vehicle List -->
+      <div class="panel-section">
+        <div class="section-label">Active Vehicles</div>
+        <div class="section-content" style="padding-bottom:8px;">
+          <div class="vehicle-list" id="vehicle-list">
+            <div class="vehicle-item selected">
+              <div class="vehicle-avatar ev">🚗</div>
+              <div class="vehicle-info">
+                <div class="vehicle-id">EV-0012</div>
+                <div class="vehicle-type">EV · CAV</div>
+              </div>
+              <span class="vehicle-speed">64 km/h</span>
+            </div>
+            <div class="vehicle-item">
+              <div class="vehicle-avatar truck">🚛</div>
+              <div class="vehicle-info">
+                <div class="vehicle-id">TRK-0005</div>
+                <div class="vehicle-type">Heavy · Manual</div>
+              </div>
+              <span class="vehicle-speed" style="color:var(--text-secondary)">48 km/h</span>
+            </div>
+            <div class="vehicle-item">
+              <div class="vehicle-avatar emergency">🚑</div>
+              <div class="vehicle-info">
+                <div class="vehicle-id">EMG-0001</div>
+                <div class="vehicle-type">Emergency · Priority</div>
+              </div>
+              <span class="vehicle-speed" style="color:var(--accent-red)">82 km/h</span>
+            </div>
+            <div class="vehicle-item">
+              <div class="vehicle-avatar bike">🛵</div>
+              <div class="vehicle-info">
+                <div class="vehicle-id">MTR-0034</div>
+                <div class="vehicle-type">Motorcycle · IoT</div>
+              </div>
+              <span class="vehicle-speed" style="color:var(--accent-green)">38 km/h</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Event Log -->
+      <div class="panel-section">
+        <div class="section-label">Event Log</div>
+        <div class="section-content">
+          <div class="event-log" id="event-log">
+            <div class="event-item">
+              <div class="event-dot cyan"></div>
+              <span class="event-text">BSM broadcast from EV-0012</span>
+              <span class="event-time">00:04</span>
+            </div>
+            <div class="event-item">
+              <div class="event-dot green"></div>
+              <span class="event-text">RSU-3 SPaT phase change → Green</span>
+              <span class="event-time">00:03</span>
+            </div>
+            <div class="event-item">
+              <div class="event-dot orange"></div>
+              <span class="event-text">FCW triggered for TRK-0005</span>
+              <span class="event-time">00:02</span>
+            </div>
+            <div class="event-item">
+              <div class="event-dot red"></div>
+              <span class="event-text">Emergency preemption activated</span>
+              <span class="event-time">00:01</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Export -->
+      <button class="v2x-btn v2x-btn-secondary" id="btn-export">
+        ↓ Export Session Data
+      </button>
+
+    </div>
+  </div>
+
+
+  <!-- ========================================================
+       STATUS BAR
+  ======================================================== -->
+  <div id="status-bar">
+    <div class="status-item">
+      <div class="dot"></div>
+      <strong>Simulation Running</strong>
+    </div>
+    <div class="status-sep"></div>
+    <div class="status-item">
+      Scenario: <strong id="sb-scenario">Urban Intersection</strong>
+    </div>
+    <div class="status-sep"></div>
+    <div class="status-item">
+      Step: <strong id="sb-step">0</strong>
+    </div>
+    <div class="status-sep"></div>
+    <div class="status-item">
+      <div class="dot orange"></div>
+      DSRC Active
+    </div>
+    <div class="status-right">
+      <div class="status-item">
+        Engine: <strong>SUMO 1.18</strong>
+      </div>
+      <div class="status-sep"></div>
+      <div class="status-item" id="sb-time">00:00:00</div>
+    </div>
+  </div>
+
+</div><!-- /app -->
+
+<!-- Toast Container -->
+<div id="toast-container"></div>
+
+<!-- ============================================================
+     JAVASCRIPT — UI INTERACTIONS ONLY
+     (No simulation logic touched)
+============================================================ -->
+<script>
+  // ──────────────────────────────────────────────
+  // Panel collapse / expand
+  // ──────────────────────────────────────────────
+  const panelLeft  = document.getElementById('panel-controls');
+  const panelRight = document.getElementById('panel-telemetry');
+  const btnToggleLeft  = document.getElementById('btn-toggle-left');
+  const btnToggleRight = document.getElementById('btn-toggle-right');
+  const closeLeft  = document.getElementById('close-left');
+  const closeRight = document.getElementById('close-right');
+
+  function togglePanel(panel, side) {
+    panel.classList.toggle('collapsed');
+  }
+
+  btnToggleLeft.addEventListener('click',  () => togglePanel(panelLeft, 'left'));
+  btnToggleRight.addEventListener('click', () => togglePanel(panelRight, 'right'));
+  closeLeft.addEventListener('click',  () => togglePanel(panelLeft, 'left'));
+  closeRight.addEventListener('click', () => togglePanel(panelRight, 'right'));
+
+  // ──────────────────────────────────────────────
+  // Segmented control
+  // ──────────────────────────────────────────────
+  document.querySelectorAll('.seg-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      this.closest('.segmented-control').querySelectorAll('.seg-btn')
+          .forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Slider live value updates
+  // ──────────────────────────────────────────────
+  const sliders = [
+    { id: 'ctrl-density', valId: 'val-density', fmt: v => v,           statId: 'stat-vehicles' },
+    { id: 'ctrl-speed',   valId: 'val-speed',   fmt: v => `${v} km/h` },
+    { id: 'ctrl-cav',     valId: 'val-cav',     fmt: v => `${v}%` },
+    { id: 'ctrl-range',   valId: 'val-range',   fmt: v => `${v}m` },
+    { id: 'ctrl-noise',   valId: 'val-noise',   fmt: v => `${v}%` },
+  ];
+
+  sliders.forEach(({ id, valId, fmt, statId }) => {
+    const el = document.getElementById(id);
+    const display = document.getElementById(valId);
+    if (!el || !display) return;
+    el.addEventListener('input', function() {
+      display.textContent = fmt(this.value);
+      if (statId) document.getElementById(statId).textContent = this.value;
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Playback controls
+  // ──────────────────────────────────────────────
+  let isPlaying = false;
+  let simSpeed = 1;
+  const speeds = [0.25, 0.5, 1, 2, 4, 8];
+  let speedIdx = 2;
+
+  const playIcon = document.getElementById('play-icon');
+  const speedDisplay = document.getElementById('speed-display');
+
+  document.getElementById('btn-play').addEventListener('click', function() {
+    isPlaying = !isPlaying;
+    playIcon.innerHTML = isPlaying
+      ? '<rect x="3" y="2" width="3" height="12" rx="1"/><rect x="10" y="2" width="3" height="12" rx="1"/>'
+      : '<path d="M5 3l9 5-9 5V3z"/>';
+    showToast(isPlaying ? '▶ Simulation Playing' : '⏸ Simulation Paused', 'info');
+  });
+
+  document.getElementById('btn-speed-up').addEventListener('click', function() {
+    if (speedIdx < speeds.length - 1) speedIdx++;
+    speedDisplay.textContent = speeds[speedIdx] + '×';
+  });
+  document.getElementById('btn-speed-down').addEventListener('click', function() {
+    if (speedIdx > 0) speedIdx--;
+    speedDisplay.textContent = speeds[speedIdx] + '×';
+  });
+
+  // Time display
+  let simStep = 0;
+  const timeDisplay = document.getElementById('time-display');
+  const stepDisplay = document.getElementById('sb-step');
+  const scrubber = document.getElementById('time-scrubber');
+
+  setInterval(() => {
+    if (!isPlaying) return;
+    simStep++;
+    const mm = String(Math.floor(simStep / 60)).padStart(2, '0');
+    const ss = String(simStep % 60).padStart(2, '0');
+    timeDisplay.textContent = `${mm}:${ss}`;
+    stepDisplay.textContent = simStep;
+    scrubber.value = Math.min(100, simStep / 6);
+  }, 1000 / speeds[speedIdx]);
+
+  // ──────────────────────────────────────────────
+  // Fullscreen
+  // ──────────────────────────────────────────────
+  document.getElementById('btn-fullscreen').addEventListener('click', function() {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  });
+
+  // ──────────────────────────────────────────────
+  // Map HUD buttons
+  // ──────────────────────────────────────────────
+  document.getElementById('map-hud').querySelectorAll('.hud-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      document.getElementById('map-hud').querySelectorAll('.hud-btn')
+              .forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Vehicle selection
+  // ──────────────────────────────────────────────
+  document.getElementById('vehicle-list').querySelectorAll('.vehicle-item').forEach(item => {
+    item.addEventListener('click', function() {
+      document.getElementById('vehicle-list').querySelectorAll('.vehicle-item')
+              .forEach(i => i.classList.remove('selected'));
+      this.classList.add('selected');
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Buttons
+  // ──────────────────────────────────────────────
+  document.getElementById('btn-apply').addEventListener('click', function() {
+    showToast('✅ Parameters Applied', 'success');
+  });
+  document.getElementById('btn-reset').addEventListener('click', function() {
+    showToast('↺ Parameters Reset', 'info');
+  });
+  document.getElementById('btn-inject').addEventListener('click', function() {
+    showToast('⚡ Event Injected into Simulation', 'warning');
+    addEvent('red', 'Manual event injection triggered');
+  });
+  document.getElementById('btn-export').addEventListener('click', function() {
+    showToast('⬇ Exporting session data...', 'info');
+  });
+
+  // ──────────────────────────────────────────────
+  // Toast Notifications
+  // ──────────────────────────────────────────────
+  function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    const colors = { info: 'var(--accent-cyan)', success: 'var(--accent-green)',
+                     warning: 'var(--accent-orange)', error: 'var(--accent-red)' };
+    toast.style.borderColor = colors[type] || colors.info;
+    toast.innerHTML = `<span>${message}</span>`;
+    container.appendChild(toast);
+    setTimeout(() => {
+      toast.classList.add('out');
+      setTimeout(() => toast.remove(), 300);
+    }, 2500);
+  }
+
+  // ──────────────────────────────────────────────
+  // Event Log
+  // ──────────────────────────────────────────────
+  function addEvent(color, text) {
+    const log = document.getElementById('event-log');
+    const mm = String(Math.floor(simStep / 60)).padStart(2, '0');
+    const ss = String(simStep % 60).padStart(2, '0');
+    const item = document.createElement('div');
+    item.className = 'event-item';
+    item.innerHTML = `
+      <div class="event-dot ${color}"></div>
+      <span class="event-text">${text}</span>
+      <span class="event-time">${mm}:${ss}</span>
+    `;
+    log.insertBefore(item, log.firstChild);
+    if (log.children.length > 12) log.lastChild.remove();
+  }
+
+  // ──────────────────────────────────────────────
+  // Live KPI Simulation (cosmetic only — replace
+  // with real data feeds from your sim engine)
+  // ──────────────────────────────────────────────
+  function randomInRange(min, max) {
+    return (Math.random() * (max - min) + min);
+  }
+
+  setInterval(() => {
+    // PDR fluctuation
+    const pdr = (97 + randomInRange(0, 2.5)).toFixed(1);
+    document.getElementById('kpi-pdr').textContent = pdr;
+    document.getElementById('bar-pdr').style.width = pdr + '%';
+    document.getElementById('stat-pdr').textContent = pdr + '%';
+
+    // Latency
+    const lat = Math.round(randomInRange(8, 20));
+    document.getElementById('kpi-latency').textContent = lat;
+    document.getElementById('bar-latency').style.width = (lat / 50 * 100) + '%';
+    document.getElementById('stat-latency').textContent = lat + 'ms';
+
+    // Messages
+    const msgs = Math.round(randomInRange(1100, 1400));
+    document.getElementById('kpi-msgs').textContent = msgs.toLocaleString();
+    document.getElementById('stat-msgs').textContent = msgs.toLocaleString();
+
+    // Throughput
+    document.getElementById('kpi-throughput').textContent =
+      randomInRange(1.8, 3.2).toFixed(1);
+
+    // Risk
+    document.getElementById('kpi-risk').textContent =
+      randomInRange(0.1, 0.8).toFixed(2);
+
+    // Occasional events
+    if (Math.random() < 0.15) {
+      const events = [
+        ['cyan',   'BSM broadcast — EV cluster'],
+        ['green',  'SPaT phase synced at RSU-2'],
+        ['orange', 'FCW issued: following distance'],
+        ['cyan',   'V2I handoff: RSU-5 → RSU-6'],
+        ['red',    'Queue length threshold exceeded'],
+      ];
+      const [color, text] = events[Math.floor(Math.random() * events.length)];
+      addEvent(color, text);
+    }
+  }, 1800);
+
+  // ──────────────────────────────────────────────
+  // Status bar clock
+  // ──────────────────────────────────────────────
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('sb-time').textContent =
+      now.toLocaleTimeString('en-US', { hour12: false });
+  }
+  updateClock();
+  setInterval(updateClock, 1000);
+
+  // ──────────────────────────────────────────────
+  // Scenario selector sync
+  // ──────────────────────────────────────────────
+  document.getElementById('ctrl-scenario').addEventListener('change', function() {
+    document.getElementById('scenario-name').textContent = this.value;
+    document.getElementById('sb-scenario').textContent = this.value;
+    showToast(`🗺 Scenario: ${this.value}`, 'info');
+  });
+
+  // ──────────────────────────────────────────────
+  // Initial welcome toast
+  // ──────────────────────────────────────────────
+  setTimeout(() => showToast('🚀 V2X Mission Control Ready', 'success'), 600);
+  (function startApiClient() {
+      const MAX_WAIT_MS  = 10_000;
+      const CHECK_MS     = 50;
+      let   waited       = 0;
+
+      const check = setInterval(() => {
+          waited += CHECK_MS;
+
+          if (typeof window.updateVehicles === 'function') {
+              clearInterval(check);
+              const client = new window.SimApiClient({ pollMs: 100 });
+              client.start();
+              window.simApiClient = client;
+              console.info('[App] SimApiClient started — access via window.simApiClient');
+
+          } else if (waited >= MAX_WAIT_MS) {
+              clearInterval(check);
+              console.error('[App] SimApiClient: window.updateVehicles never appeared after',
+                  MAX_WAIT_MS, 'ms — polling not started');
+          }
+      }, CHECK_MS);
+  }());
+</script>
+<!-- ═══════════════════════════════════════════════════
+     V2X RENDERING SYSTEM — Phase 0 Foundation
+     Load order is dependency-sorted.
+     No module has side effects on load.
+     ═══════════════════════════════════════════════════ -->
+
+<!-- Utilities (no dependencies) -->
+<script src="/static/js/rendering/utils/geometry.js"></script>
+<script src="/static/js/rendering/utils/colour.js"></script>
+
+<!-- Core (depends on utils) -->
+<script src="/static/js/rendering/core/render-constants.js"></script>
+<script src="/static/js/rendering/core/sim-projector.js"></script>
+
+<!-- Adapters (depends on core) -->
+<script src="/static/js/rendering/adapters/road-network-adapter.js"></script>
+<script src="/static/js/rendering/adapters/osm-supplement-provider.js"></script>
+
+
+<!-- Layer scaffolds (depends on core) -->
+<script src="/static/js/rendering/layers/terrain-renderer.js"></script>
+<script src="/static/js/rendering/layers/water-renderer.js"></script>
+<script src="/static/js/rendering/layers/vegetation-renderer.js"></script>
+<script src="/static/js/rendering/layers/road-renderer.js"></script>
+<script src="/static/js/rendering/layers/sidewalk-renderer.js"></script>
+<script src="/static/js/rendering/layers/crosswalk-renderer.js"></script>
+<script src="/static/js/rendering/layers/building-renderer.js"></script>
+<script src="/static/js/rendering/layers/traffic-signal-renderer.js"></script>
+<script src="/static/js/rendering/layers/vehicle-overlay-renderer.js"></script>
+
+<!-- UI scaffolds (depends on core) -->
+<script src="/static/js/rendering/ui/view-mode-controller.js"></script>
+<script src="/static/js/rendering/ui/map-interaction.js"></script>
+
+<!-- Manager (depends on everything above) -->
+<script src="/static/js/rendering/core/map-layer-manager.js"></script>
+<!-- V2V Communication — must load before rendering-bootstrap.js -->
+<script src="/static/js/rendering/core/v2v-message-store.js?v=8.1b"></script>
+
+<script src="/static/js/rendering/layers/v2v-overlay-renderer.js"></script>
+<script src="/static/js/rendering/core/rendering-bootstrap.js"></script>
+<script src="/static/js/api-client.js"></script>
+
+</body>
+</html>

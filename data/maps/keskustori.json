@@ -1,0 +1,239 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "city": "Keskustori",
+    "crs": "EPSG:4326",
+    "bounds": {
+      "min_x": -100,
+      "max_x": 800,
+      "min_z": -300,
+      "max_z": 800
+    }
+  },
+  "roads": [
+    {
+      "id": "road_main_ns",
+      "name": "Main Street (N-S)",
+      "geometry": [[200, -300], [200, 800]],
+      "lanes": [
+        {
+          "id": "lane_main_ns_1",
+          "direction": "forward",
+          "width": 3.5,
+          "centerline": [[197.5, -300], [197.5, 800]],
+          "speed_limit": 50
+        },
+        {
+          "id": "lane_main_ns_2",
+          "direction": "backward",
+          "width": 3.5,
+          "centerline": [[202.5, 800], [202.5, -300]],
+          "speed_limit": 50
+        }
+      ]
+    },
+    {
+      "id": "road_main_ew",
+      "name": "Main Street (E-W)",
+      "geometry": [[-100, 200], [800, 200]],
+      "lanes": [
+        {
+          "id": "lane_main_ew_1",
+          "direction": "forward",
+          "width": 3.5,
+          "centerline": [[-100, 197.5], [800, 197.5]],
+          "speed_limit": 50
+        },
+        {
+          "id": "lane_main_ew_2",
+          "direction": "backward",
+          "width": 3.5,
+          "centerline": [[800, 202.5], [-100, 202.5]],
+          "speed_limit": 50
+        }
+      ]
+    },
+    {
+      "id": "road_north_street",
+      "name": "North Avenue",
+      "geometry": [[-100, 500], [800, 500]],
+      "lanes": [
+        {
+          "id": "lane_north_1",
+          "direction": "forward",
+          "width": 3.5,
+          "centerline": [[-100, 497.5], [800, 497.5]],
+          "speed_limit": 40
+        },
+        {
+          "id": "lane_north_2",
+          "direction": "backward",
+          "width": 3.5,
+          "centerline": [[800, 502.5], [-100, 502.5]],
+          "speed_limit": 40
+        }
+      ]
+    },
+    {
+      "id": "road_east_avenue",
+      "name": "East Avenue",
+      "geometry": [[500, -300], [500, 800]],
+      "lanes": [
+        {
+          "id": "lane_east_1",
+          "direction": "forward",
+          "width": 3.5,
+          "centerline": [[497.5, -300], [497.5, 800]],
+          "speed_limit": 40
+        },
+        {
+          "id": "lane_east_2",
+          "direction": "backward",
+          "width": 3.5,
+          "centerline": [[502.5, 800], [502.5, -300]],
+          "speed_limit": 40
+        }
+      ]
+    }
+  ],
+  "intersections": [
+    {
+      "id": "intersection_main",
+      "name": "Main Intersection",
+      "position": [200, 200],
+      "traffic_signal_id": "signal_main",
+      "incoming_lanes": ["lane_main_ns_1", "lane_main_ns_2", "lane_main_ew_1", "lane_main_ew_2"],
+      "outgoing_lanes": ["lane_main_ns_1", "lane_main_ns_2", "lane_main_ew_1", "lane_main_ew_2"],
+      "phases": [
+        { "name": "Green NS",  "duration": 30.0, "state": "GREEN"  },
+        { "name": "Yellow NS", "duration":  4.0, "state": "YELLOW" },
+        { "name": "Red NS",    "duration": 30.0, "state": "RED"    }
+      ]
+    },
+    {
+      "id": "intersection_east_main",
+      "name": "East Intersection",
+      "position": [500, 200],
+      "traffic_signal_id": "signal_east_main",
+      "incoming_lanes": ["lane_main_ew_1", "lane_main_ew_2", "lane_east_1", "lane_east_2"],
+      "outgoing_lanes": ["lane_main_ew_1", "lane_main_ew_2", "lane_east_1", "lane_east_2"],
+      "phases": [
+        { "name": "Green EW",  "duration": 20.0, "state": "GREEN"  },
+        { "name": "Yellow EW", "duration":  4.0, "state": "YELLOW" },
+        { "name": "Red EW",    "duration": 20.0, "state": "RED"    }
+      ]
+    },
+    {
+      "id": "intersection_north",
+      "name": "North Intersection",
+      "position": [200, 500],
+      "traffic_signal_id": "signal_north",
+      "incoming_lanes": ["lane_main_ns_1", "lane_main_ns_2", "lane_north_1", "lane_north_2"],
+      "outgoing_lanes": ["lane_main_ns_1", "lane_main_ns_2", "lane_north_1", "lane_north_2"],
+      "phases": [
+        { "name": "Green NS",  "duration": 25.0, "state": "GREEN"  },
+        { "name": "Yellow NS", "duration":  4.0, "state": "YELLOW" },
+        { "name": "Red NS",    "duration": 25.0, "state": "RED"    }
+      ]
+    }
+  ],
+  "traffic_signals": [
+    {
+      "id": "signal_main",
+      "pos": [200, 200],
+      "phase_duration": 30,
+      "phases": [
+        {"direction": "NS", "state": "GREEN", "duration": 20},
+        {"direction": "NS", "state": "YELLOW", "duration": 3},
+        {"direction": "EW", "state": "GREEN", "duration": 20},
+        {"direction": "EW", "state": "YELLOW", "duration": 3}
+      ]
+    },
+    {
+      "id": "signal_east_main",
+      "pos": [500, 200],
+      "phase_duration": 30,
+      "phases": [
+        {"direction": "NS", "state": "GREEN", "duration": 20},
+        {"direction": "NS", "state": "YELLOW", "duration": 3},
+        {"direction": "EW", "state": "GREEN", "duration": 20},
+        {"direction": "EW", "state": "YELLOW", "duration": 3}
+      ]
+    },
+    {
+      "id": "signal_north",
+      "pos": [200, 500],
+      "phase_duration": 30,
+      "phases": [
+        {"direction": "NS", "state": "GREEN", "duration": 20},
+        {"direction": "NS", "state": "YELLOW", "duration": 3},
+        {"direction": "EW", "state": "GREEN", "duration": 20},
+        {"direction": "EW", "state": "YELLOW", "duration": 3}
+      ]
+    }
+  ],
+  "sidewalks": [
+    {
+      "id": "sidewalk_main_south",
+      "geometry": [[190, -300], [190, 800]],
+      "width": 2.0
+    },
+    {
+      "id": "sidewalk_main_north",
+      "geometry": [[210, -300], [210, 800]],
+      "width": 2.0
+    }
+  ],
+  "crosswalks": [
+    {
+      "id": "crosswalk_main_1",
+      "pos": [200, 200],
+      "traffic_signal_id": "signal_main",
+      "direction": "NS"
+    },
+    {
+      "id": "crosswalk_main_2",
+      "pos": [200, 200],
+      "traffic_signal_id": "signal_main",
+      "direction": "EW"
+    }
+  ],
+  "spawn_points": [
+    {
+      "id": "spawn_main_ns_1",
+      "lane_id": "lane_main_ns_1",
+      "offset": 50,
+      "type": "vehicle"
+    },
+    {
+      "id": "spawn_main_ns_2",
+      "lane_id": "lane_main_ns_1",
+      "offset": 200,
+      "type": "vehicle"
+    },
+    {
+      "id": "spawn_main_ew_1",
+      "lane_id": "lane_main_ew_1",
+      "offset": 50,
+      "type": "vehicle"
+    },
+    {
+      "id": "spawn_main_ew_2",
+      "lane_id": "lane_main_ew_1",
+      "offset": 300,
+      "type": "vehicle"
+    },
+    {
+      "id": "spawn_north_1",
+      "lane_id": "lane_north_1",
+      "offset": 100,
+      "type": "vehicle"
+    },
+    {
+      "id": "spawn_east_1",
+      "lane_id": "lane_east_1",
+      "offset": 150,
+      "type": "vehicle"
+    }
+  ]
+}
