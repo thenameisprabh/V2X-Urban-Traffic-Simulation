@@ -8,10 +8,11 @@ var VEHICLE_LABELS = {};
 
 // Geometry cache
 var VEHICLE_GEOMETRY = {
-  car: new THREE.BoxGeometry(2.0, 1.4, 4.5),
-  cyclist: new THREE.CylinderGeometry(0.3, 0.3, 1.6, 8),
-  pedestrian: new THREE.CylinderGeometry(0.4, 0.4, 1.8, 8),
-  parked: new THREE.BoxGeometry(2.0, 1.4, 4.5),
+  // Increased sizes so vehicles are more visible in the scene (units = metres)
+  car: new THREE.BoxGeometry(4.0, 1.8, 9.0),
+  cyclist: new THREE.CylinderGeometry(0.45, 0.45, 2.0, 8),
+  pedestrian: new THREE.CylinderGeometry(0.5, 0.5, 2.0, 8),
+  parked: new THREE.BoxGeometry(4.0, 1.8, 9.0),
 };
 
 // Material cache
@@ -47,9 +48,20 @@ function _createVehicleMesh(vehicle) {
   mesh.name = 'vehicle_' + vehicle.uid;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
-
-  var pos = vehicle.pos || [0, 0];
-  mesh.position.set(pos[0], 0.9, pos[1]);
+  // Compute bounding box and position mesh so it rests on the ground
+  if (mesh.geometry && typeof mesh.geometry.computeBoundingBox === 'function') {
+    mesh.geometry.computeBoundingBox();
+    var bbox = mesh.geometry.boundingBox;
+    var halfHeight = 0.9;
+    if (bbox) {
+      halfHeight = (bbox.max.y - bbox.min.y) * 0.5;
+    }
+    var pos = vehicle.pos || [0, 0];
+    mesh.position.set(pos[0], halfHeight, pos[1]);
+  } else {
+    var pos = vehicle.pos || [0, 0];
+    mesh.position.set(pos[0], 0.9, pos[1]);
+  }
   mesh.rotation.y = vehicle.rotation || 0;
 
   window.SCN.add(mesh);

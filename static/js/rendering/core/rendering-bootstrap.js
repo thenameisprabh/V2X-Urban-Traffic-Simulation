@@ -75,9 +75,8 @@ async function _boot() {
 
     console.info('[Bootstrap] Step 1 ✓ — canvases acquired');
 
-    // ── Step 2: Wait for KeskustoriApp to be ready ─────────────────────────
-    await _waitForApp();
-    console.info('[Bootstrap] Step 2 ✓ — KeskustoriApp ready');
+    // ── Step 2: KeskustoriApp (Three.js) is optional — 2D renderer is standalone
+    console.info('[Bootstrap] Step 2 ✓ — proceeding without KeskustoriApp');
 
     // ── Step 3: Fetch road network from backend ─────────────────────────────
     const apiJson = await _fetchRoadNetwork();
@@ -153,8 +152,9 @@ async function _boot() {
     }
     const viewController = new window.ViewModeController(
         simCanvas, mapCanvas, layerManager,
-        { initialMode: 'SIM_3D' }
+        { initialMode: 'MAP_2D' }
     );
+    viewController.showMap();
     console.info('[Bootstrap] Step 9 ✓ — ViewModeController ready, mode:', viewController.mode);
 
     // ── Step 10: Initialize MapLayerManager (starts render loop) ───────────
@@ -177,7 +177,20 @@ async function _boot() {
         console.warn('[Bootstrap] Step 10a ⚠ — VehicleOverlayRenderer not found; updateVehicles is a no-op');
     }
 
-    // ── Step 10b: Wire V2V message update hook ──────────────────────────────
+    // ── Step 10b: Wire traffic-light update hook ─────────────────────────
+    const trafficSignalLayer = layerManager.getLayer('TrafficSignalRenderer');
+    if (trafficSignalLayer && typeof trafficSignalLayer.updateSignals === 'function') {
+        window.updateTrafficLights = (lights) => {
+            trafficSignalLayer.updateSignals(lights);
+            layerManager.markDirty();
+        };
+        console.info('[Bootstrap] Step 10b ✓ — window.updateTrafficLights wired to TrafficSignalRenderer');
+    } else {
+        window.updateTrafficLights = () => {};
+        console.warn('[Bootstrap] Step 10b ⚠ — TrafficSignalRenderer not found; updateTrafficLights is a no-op');
+    }
+
+    // ── Step 10c: Wire V2V message update hook ──────────────────────────────
     // Parallel to window.updateVehicles.
     // Called by SimApiClient after processing state.messages.
     // Updates V2VMessageStore (vehicle positions + messages) then marks dirty.
@@ -187,10 +200,10 @@ async function _boot() {
             window.v2vMessageStore.update(messages, state.tick);   // ← correct
             layerManager.markDirty();
         };
-        console.info('[Bootstrap] Step 10b ✓ — window.updateMessages wired to V2VMessageStore');
+        console.info('[Bootstrap] Step 10c ✓ — window.updateMessages wired to V2VMessageStore');
     } else {
         window.updateMessages = () => {};
-        console.warn('[Bootstrap] Step 10b ⚠ — V2VMessageStore not found; updateMessages is a no-op');
+        console.warn('[Bootstrap] Step 10c ⚠ — V2VMessageStore not found; updateMessages is a no-op');
     }
 
     // ── Step 11: Force one dirty frame so roads appear immediately ──────────

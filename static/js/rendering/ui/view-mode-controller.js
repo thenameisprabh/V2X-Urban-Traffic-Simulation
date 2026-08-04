@@ -239,18 +239,18 @@ class ViewModeController {
 
             case VIEW_MODE.MAP_2D:
                 // Map is primary — fully visible and interactive
-                _setVisibility(this._mapCanvas, OPACITY.ACTIVE, 'auto');
+                _setVisibility(this._mapCanvas, OPACITY.ACTIVE, 'auto', 'block');
                 // Sim dims to background — still renders but not interactive
-                _setVisibility(this._simCanvas, OPACITY.DIM,    'none');
+                _setVisibility(this._simCanvas, OPACITY.DIM, 'none', 'block');
                 // Resume map renderer if it was paused
                 if (this._paused) this.resume();
                 break;
 
             case VIEW_MODE.SIM_3D:
                 // Sim is primary — fully visible and interactive
-                _setVisibility(this._simCanvas, OPACITY.ACTIVE,     'auto');
+                _setVisibility(this._simCanvas, OPACITY.ACTIVE, 'auto', 'block');
                 // Map is hidden — pause renderer to save resources
-                _setVisibility(this._mapCanvas, OPACITY.BACKGROUND, 'none');
+                _setVisibility(this._mapCanvas, OPACITY.BACKGROUND, 'none', 'none');
                 // Pause map renderer since it is not visible
                 if (!this._paused) this.pause();
                 break;
@@ -299,9 +299,10 @@ class ViewModeController {
  * @param {string}            opacity
  * @param {string}            pointerEvents
  */
-function _setVisibility(canvas, opacity, pointerEvents) {
+function _setVisibility(canvas, opacity, pointerEvents, display = 'block') {
     canvas.style.opacity       = opacity;
     canvas.style.pointerEvents = pointerEvents;
+    canvas.style.display       = display;
 }
 
 /**

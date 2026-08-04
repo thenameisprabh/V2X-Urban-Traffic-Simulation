@@ -14,8 +14,8 @@
  *   5. UID label             — drawn only above ZOOM_THRESHOLDS.vehicleLabels
  *
  * Coordinate contract:
- *   - vehicle.position = [x, z] in simulation world metres
- *   - vehicle.heading  = radians, 0 = +X axis, clockwise positive (optional)
+ *   - vehicle.pos      = [x, z] in simulation world metres
+ *   - vehicle.rotation = radians, 0 = +X axis, clockwise positive (optional)
  *   - proj.project(x, z) → { cx, cy } in CSS pixels
  *   - proj.metresToPixels(m) → CSS pixel length
  *
@@ -208,14 +208,14 @@ class VehicleOverlayRenderer {
      */
     _drawVehicle(ctx, proj, vehicle, timestamp, showLabels) {
         // ── Unpack vehicle fields ─────────────────────────────────────────
-        const pos     = vehicle.position;
+        const pos     = vehicle.pos;
         if (!Array.isArray(pos) || pos.length < 2) return;
         if (!isFinite(pos[0]) || !isFinite(pos[1])) return;
 
         const worldX  = pos[0];
         const worldZ  = pos[1];
-        const heading = (typeof vehicle.heading === 'number' && isFinite(vehicle.heading))
-            ? vehicle.heading
+        const heading = (typeof vehicle.rotation === 'number' && isFinite(vehicle.rotation))
+            ? vehicle.rotation
             : 0;
         const vType   = (vehicle.type ?? 'default').toLowerCase();
         const isEmerg = vehicle.is_emergency === true || vType === 'emergency';

@@ -399,9 +399,8 @@ async def get_state():
         
         # Get raw state from engine
         raw_state = simulation_engine.get_state()
-        
-                # Ensure proper format
-# Ensure proper format
+
+        # Ensure proper format
         state = {
             "status": "ok",
             "tick": raw_state.get("tick", 0),
@@ -412,10 +411,32 @@ async def get_state():
             "lanes": [],
             "weather": raw_state.get("weather", {}),
             "time_of_day": raw_state.get("time_of_day", 12),
-            "messages": raw_state.get("messages", [])   # ← ADD THIS LINE
+            "messages": raw_state.get("messages", [])
         }
 
+        # Populate traffic lights from the road network when the engine does not
+        # provide them explicitly. This is the live-state contract expected by the
+        # frontend renderer.
+        if road_network is not None and hasattr(road_network, "traffic_signals"):
+            traffic_lights = []
+            for idx, signal in enumerate(road_network.traffic_signals):
+                if isinstance(signal, dict):
+                    signal_id = signal.get("id", f"signal_{idx}")
+                    signal_pos = signal.get("pos", [0, 0])
+                    signal_state = signal.get("state", "RED")
+                else:
+                    signal_id = getattr(signal, "id", f"signal_{idx}")
+                    signal_pos = getattr(signal, "pos", [0, 0])
+                    signal_state = getattr(signal, "state", "RED")
 
+                traffic_lights.append({
+                    "id": signal_id or f"signal_{idx}",
+                    "pos": signal_pos if isinstance(signal_pos, (list, tuple)) else [0, 0],
+                    "state": signal_state or "RED",
+                })
+
+            if traffic_lights:
+                state["traffic_lights"] = traffic_lights
 
         # Populate map data from road network for legacy UI
         if road_network is not None:
@@ -494,7 +515,8 @@ async def get_state():
                 except Exception as e:
                     print(f"⚠️  Warning: Could not serialize vehicle: {e}")
                     continue
-        
+
+        print(f"[STATE] traffic_lights={state['traffic_lights']} messages={len(state['messages'])}")
         return JSONResponse(state)
     
     except Exception as e:

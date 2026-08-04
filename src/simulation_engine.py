@@ -143,8 +143,14 @@ class SimulationEngine:
                 # ── end Phase 11 yield ───────────────────────────────────────
 
                 vehicle.update(dt)
-                if vehicle.position <= 1.0:
-                    updated_vehicles.append(vehicle)
+
+                # Keep vehicles active after they pass the normalized lane end
+                # so they remain visible in the live state instead of being
+                # dropped from the simulation set.
+                if vehicle.position >= 1.0:
+                    vehicle.position = vehicle.position % 1.0
+
+                updated_vehicles.append(vehicle)
             except Exception as e:
                 print(f"   ❌ Vehicle update error: {e}")
 
@@ -399,8 +405,8 @@ class SimulationEngine:
         message_list      = []
         vehicle_positions = {}   # uid → [x, z]  — shared by all range checks
 
-        # ── Pass 1: resolve world positions for every vehicle ─────────────
-        for v in self.vehicles[:20]:
+        # ── Pass 1: resolve world positions for every active vehicle ─────
+        for v in self.vehicles:
             lane     = self.road_network.get_lane(v.lane_id)
             pos      = [0.0, 0.0]
             rotation = 0.0
@@ -431,7 +437,7 @@ class SimulationEngine:
             })
 
         # ── 1 + 2: Vehicle messages (BSM + EVA) ───────────────────────────
-        for v in self.vehicles[:20]:
+        for v in self.vehicles:
             pos = vehicle_positions[v.id]
 
             # BSM — targeted to vehicles within BSM_RANGE_M

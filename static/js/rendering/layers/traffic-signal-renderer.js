@@ -82,6 +82,29 @@ class TrafficSignalRenderer {
         // Always projects live
     }
 
+    updateSignals(lights) {
+        if (!Array.isArray(lights)) return;
+
+        const signals = this._network?.signals ?? [];
+        if (!Array.isArray(signals) || signals.length === 0) return;
+
+        const signalMap = new Map();
+        for (const signal of signals) {
+            if (signal && signal.id) {
+                signalMap.set(String(signal.id), signal);
+            }
+        }
+
+        for (const light of lights) {
+            const signal = signalMap.get(String(light?.id ?? light?.signal_id ?? ''));
+            if (!signal) continue;
+
+            const state = this._normaliseState(light?.state ?? light?.signal_state ?? light?.phase_state ?? light?.phase);
+            signal._clientState = state;
+            signal.state = state;
+        }
+    }
+
     destroy() {
         this._ready   = false;
         this._network = null;
@@ -93,14 +116,20 @@ class TrafficSignalRenderer {
     // Private
     // -----------------------------------------------------------------------
 
+    _normaliseState(rawState) {
+        const state = String(rawState ?? 'RED').toUpperCase();
+        if (state === 'AMBER' || state === 'YELLOW') return 'YELLOW';
+        if (state === 'GREEN') return 'GREEN';
+        return 'RED';
+    }
+
     _drawSignal(ctx, proj, signal, lightPx) {
         if (!signal.pos) return;
 
         const { cx, cy } = proj.project(signal.pos.x, signal.pos.z);
 
         // Normalise state — prefer _clientState (client-authoritative until Phase 6)
-        const rawState    = signal._clientState ?? signal.state ?? 'RED';
-        const state       = rawState.toUpperCase();
+        const state = this._normaliseState(signal._clientState ?? signal.state ?? 'RED');
         const phaseStyle  = this._style.phases[state]
                          ?? this._style.phases[this._style.defaultState]
                          ?? this._style.phases['RED'];

@@ -166,6 +166,11 @@
                     window.updateVehicles(vehicles);
                 }
 
+                // ── Traffic-light wire ───────────────────────────────────────────
+                if (typeof window.updateTrafficLights === 'function') {
+                    window.updateTrafficLights(data.traffic_lights);
+                }
+
                 // ── V2V message wire (Phase 9) ───────────────────────────────────
                 if (typeof window.updateMessages === 'function') {
                     window.updateMessages(messages, vehicles, data);
