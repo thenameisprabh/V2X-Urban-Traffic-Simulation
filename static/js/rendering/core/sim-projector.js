@@ -40,6 +40,28 @@ const PAN_LIMIT_FACTOR = 0.5;
 const MAX_DPR = 3;
 
 // ---------------------------------------------------------------------------
+// Animation constants
+// ---------------------------------------------------------------------------
+
+/** Default animated transition duration in milliseconds. */
+const ANIM_DURATION_MS = 600;
+
+/** Exponential smoothing factor for vehicle follow (per-frame, 60 Hz assumed).
+ *  Lower = smoother / more lag. Higher = snappier. */
+const FOLLOW_SMOOTH = 0.08;
+
+/** How far ahead of the vehicle centre to lead the camera, in metres. */
+const FOLLOW_LEAD_M = 12;
+
+/** Scale used when following a vehicle (pixels per metre). */
+const FOLLOW_SCALE = 8.0;
+
+/** Cubic ease-in-out — maps t ∈ [0,1] → [0,1]. */
+function _easeInOut(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+// ---------------------------------------------------------------------------
 // SimProjector
 // ---------------------------------------------------------------------------
 
@@ -77,9 +99,21 @@ class SimProjector {
         this._scale     = null;
 
         // Read real CSS dimensions immediately from the canvas element
-       const rect      = canvas.getBoundingClientRect();
+        const rect      = canvas.getBoundingClientRect();
         this._cssWidth  = rect.width  || canvas.offsetWidth  || canvas.clientWidth  || 800;
         this._cssHeight = rect.height || canvas.offsetHeight || canvas.clientHeight || 600;
+
+        // ── Animation state ──────────────────────────────────────────────────
+        /** @type {object|null} Active animateTo() tween. */
+        this._anim = null;
+
+        // ── Follow state ─────────────────────────────────────────────────────
+        /** @type {string|number|null} UID of vehicle being followed. */
+        this._followUid    = null;
+        /** @type {number} Smoothed follow origin X (world metres). */
+        this._followOriginX = 0;
+        /** @type {number} Smoothed follow origin Z (world metres). */
+        this._followOriginZ = 0;
 
         console.info('[SimProjector] constructor — cssW:', this._cssWidth,
             'cssH:', this._cssHeight);
@@ -122,9 +156,6 @@ class SimProjector {
         };
     }
 
-    /**
-     * Converts a distance in world metres to CSS pixels at the current scale.
-     *
     /**
      * Converts a world-space distance in metres to CSS pixels at the current scale.
      * Uses the same _scale factor as project() so results are consistent.
@@ -211,6 +242,9 @@ class SimProjector {
         this._originX = (minX + maxX) / 2;
         this._originZ = (minZ + maxZ) / 2;
 
+        // Cancel any active animation — fit() is an immediate snap
+        this._anim = null;
+
         console.info('[SimProjector] fit() — scale:', this._scale.toFixed(4),
             'world:', worldW.toFixed(1), 'x', worldH.toFixed(1), 'm',
             'origin: (', this._originX.toFixed(2), ',', this._originZ.toFixed(2), ')');
@@ -222,6 +256,110 @@ class SimProjector {
     }
 
     /**
+     * Fits the camera to show all intersection centres with a comfortable margin,
+     * choosing a nicer zoom level than fitting the entire world (which often
+     * includes large empty areas around Keskustori).
+     *
+     * If no intersections are provided or they have no geometry, falls back to fit().
+     *
+     * @param {object[]} intersections  Array of RenderIntersection objects.
+     *                                  Each must have { centre: { x, z } } or { x, z }.
+     * @param {number}   [padding=0.15] Fraction of canvas to leave as margin.
+     */
+    fitIntersections(intersections, padding = 0.15) {
+        if (!Array.isArray(intersections) || intersections.length === 0) {
+            this.fit(padding);
+            return;
+        }
+
+        // Collect centre points — support both {centre:{x,z}} and direct {x,z}
+        const points = [];
+        for (const ix of intersections) {
+            if (!ix) continue;
+            const c = ix.centre ?? ix;
+            if (typeof c.x === 'number' && typeof c.z === 'number') {
+                points.push(c);
+            }
+        }
+
+        if (points.length === 0) {
+            this.fit(padding);
+            return;
+        }
+
+        let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+        for (const p of points) {
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.z < minZ) minZ = p.z;
+            if (p.z > maxZ) maxZ = p.z;
+        }
+
+        // Add a fixed world-space margin so a single intersection isn't
+        // zoomed in to a single pixel
+        const MIN_EXTENT_M = 80;
+        if (maxX - minX < MIN_EXTENT_M) {
+            const cx = (minX + maxX) / 2;
+            minX = cx - MIN_EXTENT_M / 2;
+            maxX = cx + MIN_EXTENT_M / 2;
+        }
+        if (maxZ - minZ < MIN_EXTENT_M) {
+            const cz = (minZ + maxZ) / 2;
+            minZ = cz - MIN_EXTENT_M / 2;
+            maxZ = cz + MIN_EXTENT_M / 2;
+        }
+
+        const pad    = Math.max(0, Math.min(padding, 0.4));
+        const scaleX = (this._cssWidth  * (1 - pad * 2)) / (maxX - minX);
+        const scaleY = (this._cssHeight * (1 - pad * 2)) / (maxZ - minZ);
+
+        const MIN_SC = (window.RENDER_CONSTANTS && window.RENDER_CONSTANTS.MIN_SCALE) || MIN_SCALE;
+        const MAX_SC = (window.RENDER_CONSTANTS && window.RENDER_CONSTANTS.MAX_SCALE) || MAX_SCALE;
+        const targetScale = Math.max(MIN_SC, Math.min(MAX_SC, Math.min(scaleX, scaleY)));
+
+        const targetX = (minX + maxX) / 2;
+        const targetZ = (minZ + maxZ) / 2;
+
+        // Animate smoothly from current position to intersection view
+        this.animateTo(targetX, targetZ, targetScale, ANIM_DURATION_MS);
+
+        console.info('[SimProjector] fitIntersections() — intersections:', points.length,
+            'target scale:', targetScale.toFixed(4),
+            'centre: (', targetX.toFixed(1), ',', targetZ.toFixed(1), ')');
+    }
+
+    /**
+     * Smoothly animates the camera to the target world position and scale.
+     * Cancels any active follow. Uses cubic ease-in-out.
+     *
+     * @param {number} targetX      World X to centre on.
+     * @param {number} targetZ      World Z to centre on.
+     * @param {number} targetScale  Target pixels-per-metre zoom level.
+     * @param {number} [durationMs] Animation duration in ms (default 600).
+     */
+    animateTo(targetX, targetZ, targetScale, durationMs = ANIM_DURATION_MS) {
+        _assertFinite(targetX,     'targetX');
+        _assertFinite(targetZ,     'targetZ');
+        _assertFinite(targetScale, 'targetScale');
+
+        const MIN_SC = (window.RENDER_CONSTANTS && window.RENDER_CONSTANTS.MIN_SCALE) || MIN_SCALE;
+        const MAX_SC = (window.RENDER_CONSTANTS && window.RENDER_CONSTANTS.MAX_SCALE) || MAX_SCALE;
+
+        this._followUid = null; // cancel follow
+
+        this._anim = {
+            startX:     this._originX ?? targetX,
+            startZ:     this._originZ ?? targetZ,
+            startScale: this._scale   ?? targetScale,
+            endX:       targetX,
+            endZ:       targetZ,
+            endScale:   Math.max(MIN_SC, Math.min(MAX_SC, targetScale)),
+            startTime:  null,   // set on first tick() call
+            duration:   Math.max(0, durationMs),
+        };
+    }
+
+    /**
      * Zooms in or out, keeping the canvas point (focusCx, focusCz) stationary.
      *
      * @param {number} delta    Raw wheel delta (positive = zoom out, negative = zoom in).
@@ -230,6 +368,10 @@ class SimProjector {
      */
     zoom(delta, focusCx, focusCz) {
         _assertFinite(delta, 'delta');
+
+        // Any manual interaction cancels animations and follow
+        this._anim      = null;
+        this._followUid = null;
 
         const cx = (focusCx !== undefined) ? focusCx : this._cssWidth  * 0.5;
         const cz = (focusCz !== undefined) ? focusCz : this._cssHeight * 0.5;
@@ -250,6 +392,7 @@ class SimProjector {
 
     /**
      * Pans the camera by a CSS pixel delta.
+     * Cancels any active animation and vehicle follow.
      *
      * @param {number} dx  Pixel delta X (positive = pan right = world moves left).
      * @param {number} dy  Pixel delta Y (positive = pan down  = world moves up).
@@ -257,6 +400,10 @@ class SimProjector {
     pan(dx, dy) {
         _assertFinite(dx, 'dx');
         _assertFinite(dy, 'dy');
+
+        // Any manual pan cancels animations and follow
+        this._anim      = null;
+        this._followUid = null;
 
         this._originX -= dx / this._scale;
         this._originZ -= dy / this._scale;
@@ -302,6 +449,122 @@ class SimProjector {
         if (this._scale === null || this._scale <= 0) {
             this.fit();
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Public — Vehicle follow
+    // -----------------------------------------------------------------------
+
+    /**
+     * Starts smoothly following a vehicle by UID.
+     * The camera pans every tick() to keep the vehicle centred with a lead point.
+     *
+     * @param {string|number} uid  Vehicle UID matching vehicle.uid from /api/state.
+     */
+    followVehicle(uid) {
+        if (uid == null) { this.stopFollow(); return; }
+
+        this._followUid = uid;
+        this._anim      = null; // animateTo and follow are mutually exclusive
+
+        // Snap follow origin to current camera position so there's no jump
+        this._followOriginX = this._originX ?? 0;
+        this._followOriginZ = this._originZ ?? 0;
+
+        console.info('[SimProjector] followVehicle()', uid);
+    }
+
+    /**
+     * Stops vehicle follow mode. Camera remains where it was.
+     */
+    stopFollow() {
+        if (this._followUid !== null) {
+            console.info('[SimProjector] stopFollow()');
+        }
+        this._followUid = null;
+    }
+
+    /** Whether the camera is currently following a vehicle. */
+    get isFollowing() { return this._followUid !== null; }
+
+    /** UID of the currently followed vehicle, or null. */
+    get followUid()   { return this._followUid; }
+
+    // -----------------------------------------------------------------------
+    // Public — Per-frame tick (called by MapLayerManager._loop)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Advances animations and follow smoothing. Must be called once per RAF
+     * frame by MapLayerManager before the dirty check.
+     *
+     * @param {number}   timestamp  DOMHighResTimeStamp from requestAnimationFrame.
+     * @param {object[]} [vehicles] Latest vehicle array (needed for follow mode).
+     * @returns {boolean} true if the camera moved this frame (caller should markDirty).
+     */
+    tick(timestamp, vehicles) {
+        let moved = false;
+
+        // ── animateTo tween ───────────────────────────────────────────────
+        if (this._anim !== null) {
+            const a = this._anim;
+            if (a.startTime === null) a.startTime = timestamp;
+
+            const elapsed = timestamp - a.startTime;
+            const t       = a.duration > 0 ? Math.min(1, elapsed / a.duration) : 1;
+            const et      = _easeInOut(t);
+
+            this._originX = a.startX     + (a.endX     - a.startX)     * et;
+            this._originZ = a.startZ     + (a.endZ     - a.startZ)     * et;
+            this._scale   = a.startScale + (a.endScale - a.startScale) * et;
+
+            if (t >= 1) {
+                // Snap to exact target and clear tween
+                this._originX = a.endX;
+                this._originZ = a.endZ;
+                this._scale   = a.endScale;
+                this._anim    = null;
+            }
+
+            moved = true;
+        }
+
+        // ── vehicle follow ────────────────────────────────────────────────
+        if (this._followUid !== null && Array.isArray(vehicles) && vehicles.length > 0) {
+            const uid = this._followUid;
+            // Coerce uid to string for comparison since backend may return int or string
+            const vehicle = vehicles.find(v => String(v.uid) === String(uid));
+
+            if (vehicle) {
+                const pos = vehicle.pos ?? vehicle.position;
+                if (Array.isArray(pos) && pos.length >= 2) {
+                    const vx  = pos[0];
+                    const vz  = pos[1];
+                    const rot = vehicle.rotation ?? vehicle.heading ?? 0;
+
+                    // Lead point: ahead of vehicle in its direction of travel
+                    const targetX = vx + Math.cos(rot) * FOLLOW_LEAD_M;
+                    const targetZ = vz + Math.sin(rot) * FOLLOW_LEAD_M;
+
+                    // Exponential smoothing toward target
+                    const α = FOLLOW_SMOOTH;
+                    this._followOriginX += (targetX - this._followOriginX) * α;
+                    this._followOriginZ += (targetZ - this._followOriginZ) * α;
+
+                    // Scale: smoothly approach FOLLOW_SCALE
+                    const targetScale = FOLLOW_SCALE;
+                    this._scale += (targetScale - this._scale) * α;
+
+                    this._originX = this._followOriginX;
+                    this._originZ = this._followOriginZ;
+                    moved = true;
+                }
+            }
+            // If vehicle not found this frame, hold position (vehicle may be
+            // between API polls — don't cancel follow).
+        }
+
+        return moved;
     }
 
     // -----------------------------------------------------------------------

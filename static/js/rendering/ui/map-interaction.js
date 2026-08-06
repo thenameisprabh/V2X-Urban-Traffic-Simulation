@@ -3,11 +3,12 @@
  * @description Input event handler for the 2D map canvas.
  *
  * Responsibilities:
- *   - Mouse wheel → zoom toward cursor
- *   - Mouse drag  → pan
+ *   - Mouse wheel → smooth zoom toward cursor (accumulated + lerped per RAF)
+ *   - Mouse drag  → pan with inertia on release
  *   - Touch pinch → zoom
  *   - Touch drag  → pan
  *   - Double-click → fit world into view
+ *   - Escape key   → cancel vehicle follow
  *   - Enables pointer-events on #map-canvas when active
  *
  * This class MUST NOT:
@@ -30,8 +31,20 @@
 /** Minimum pixel movement before a mousedown is treated as a drag. */
 const DRAG_THRESHOLD_PX = 3;
 
-/** Prevent wheel events firing faster than this (ms). */
-const WHEEL_THROTTLE_MS = 16;
+/** Inertia decay multiplier per frame (applied once per RAF, ~60 Hz).
+ *  0.85 ≈ half-life of ~4 frames; feels like gliding on glass. */
+const INERTIA_DECAY = 0.85;
+
+/** Stop inertia when velocity drops below this (px/frame). */
+const INERTIA_MIN_PX = 0.3;
+
+/** Wheel delta accumulator lerp rate per RAF frame.
+ *  Controls how quickly the camera catches up to queued scroll input.
+ *  Lower = smoother coast; higher = snappier. */
+const WHEEL_LERP = 0.18;
+
+/** Wheel delta below which the accumulator is snapped to zero. */
+const WHEEL_MIN_DELTA = 0.5;
 
 // ---------------------------------------------------------------------------
 // MapInteraction
@@ -67,16 +80,26 @@ class MapInteraction {
         this._lastDragY    = 0;
         this._dragMoved    = false;
 
+        // Inertia state (velocity in CSS px/frame, decays exponentially after drag release)
+        this._velX = 0;
+        this._velY = 0;
+
         // Pinch state
         this._pinchDist    = null;
 
-        // Wheel throttle
-        this._lastWheelTime = 0;
+        // Smooth wheel zoom accumulator
+        // Raw wheel events add to _wheelAccum; tickZoom() drains it per RAF frame.
+        this._wheelAccum   = 0;     // total pending delta
+        this._wheelFocusCx = 0;    // canvas pixel to zoom toward
+        this._wheelFocusCy = 0;
 
         // Bound listener references — stored so we can removeEventListener cleanly
         this._listeners = [];
 
         this._active = false;
+
+        // Wire layerManager back-reference so it can call tickZoom() in its loop
+        this._layerManager._interaction = this;
     }
 
     // -----------------------------------------------------------------------
@@ -107,6 +130,7 @@ class MapInteraction {
                  { passive: false });
         this._on(this._canvas, 'touchend',    this._onTouchEnd.bind(this));
         this._on(this._canvas, 'contextmenu', this._onContextMenu.bind(this));
+        this._on(window,       'keydown',     this._onKeyDown.bind(this));
 
         console.info('[MapInteraction] enabled');
     }
@@ -139,6 +163,45 @@ class MapInteraction {
     }
 
     // -----------------------------------------------------------------------
+    // Public — Per-frame smooth zoom drain
+    // Called by MapLayerManager._loop() every RAF frame.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Drains the wheel accumulator by one lerp step and applies the result
+     * to the projector. Returns true if the camera moved.
+     *
+     * @returns {boolean}
+     */
+    tickZoom() {
+        if (Math.abs(this._wheelAccum) < WHEEL_MIN_DELTA) {
+            this._wheelAccum = 0;
+            return false;
+        }
+
+        // Consume a fraction of the accumulated delta this frame
+        const step = this._wheelAccum * WHEEL_LERP;
+        this._wheelAccum -= step;
+
+        this._projector.zoom(step, this._wheelFocusCx, this._wheelFocusCy);
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // Private — Keyboard events
+    // -----------------------------------------------------------------------
+
+    /** @private */
+    _onKeyDown(e) {
+        if (e.key === 'Escape') {
+            if (typeof this._projector.stopFollow === 'function') {
+                this._projector.stopFollow();
+                this._layerManager.markDirty();
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Private — Mouse events
     // -----------------------------------------------------------------------
 
@@ -147,14 +210,11 @@ class MapInteraction {
         e.preventDefault();
         e.stopPropagation();
 
-        // Throttle
-        const now = performance.now();
-        if (now - this._lastWheelTime < WHEEL_THROTTLE_MS) return;
-        this._lastWheelTime = now;
-
+        // Accumulate — do NOT call projector.zoom() here.
+        // tickZoom() drains per RAF frame for smooth motion.
         const rect = this._canvas.getBoundingClientRect();
-        const cx   = e.clientX - rect.left;
-        const cy   = e.clientY - rect.top;
+        this._wheelFocusCx = e.clientX - rect.left;
+        this._wheelFocusCy = e.clientY - rect.top;
 
         // Normalise delta across browsers and input devices
         // deltaMode 0 = pixels, 1 = lines (~16px), 2 = pages (~400px)
@@ -162,19 +222,24 @@ class MapInteraction {
         if (e.deltaMode === 1) delta *= 16;
         if (e.deltaMode === 2) delta *= 400;
 
-        this._projector.zoom(delta, cx, cy);
-        this._layerManager.markDirty();
+        this._wheelAccum += delta;
     }
 
     /** @private */
     _onMouseDown(e) {
         if (e.button !== 0) return; // left button only
+
         this._dragging   = true;
         this._dragMoved  = false;
         this._dragStartX = e.clientX;
         this._dragStartY = e.clientY;
         this._lastDragX  = e.clientX;
         this._lastDragY  = e.clientY;
+
+        // Kill inertia when the user grabs the map again
+        this._velX = 0;
+        this._velY = 0;
+
         this._canvas.style.cursor = 'grabbing';
     }
 
@@ -194,6 +259,11 @@ class MapInteraction {
             Math.hypot(totalDx, totalDy) < DRAG_THRESHOLD_PX) return;
 
         this._dragMoved = true;
+
+        // Track velocity for inertia
+        this._velX = dx;
+        this._velY = dy;
+
         this._projector.pan(dx, dy);
         this._layerManager.markDirty();
     }
@@ -203,6 +273,39 @@ class MapInteraction {
         if (!this._dragging) return;
         this._dragging = false;
         this._canvas.style.cursor = 'grab';
+
+        // Launch inertia — RAF loop will call _tickInertia via layerManager
+        // but since we don't hook a separate ticker for inertia we fold it
+        // into tickZoom(). Instead we keep the velocities and drain them
+        // per-markDirty cycle using a small RAF self-schedule trick.
+        if (Math.hypot(this._velX, this._velY) > INERTIA_MIN_PX) {
+            this._runInertia();
+        }
+    }
+
+    /**
+     * Runs the inertia decay loop after drag release using rAF directly.
+     * Stops when velocity falls below threshold.
+     * @private
+     */
+    _runInertia() {
+        const step = () => {
+            if (this._dragging) return; // user grabbed again — stop
+
+            this._velX *= INERTIA_DECAY;
+            this._velY *= INERTIA_DECAY;
+
+            if (Math.hypot(this._velX, this._velY) < INERTIA_MIN_PX) {
+                this._velX = 0;
+                this._velY = 0;
+                return;
+            }
+
+            this._projector.pan(this._velX, this._velY);
+            this._layerManager.markDirty();
+            requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
     }
 
     /** @private */
@@ -233,6 +336,8 @@ class MapInteraction {
             this._lastDragX = e.touches[0].clientX;
             this._lastDragY = e.touches[0].clientY;
             this._pinchDist = null;
+            this._velX      = 0;
+            this._velY      = 0;
 
         } else if (e.touches.length === 2) {
             // Two fingers — pinch zoom
@@ -252,6 +357,8 @@ class MapInteraction {
             this._lastDragY = e.touches[0].clientY;
 
             if (Math.abs(dx) > 0 || Math.abs(dy) > 0) {
+                this._velX = dx;
+                this._velY = dy;
                 this._projector.pan(dx, dy);
                 this._layerManager.markDirty();
             }
@@ -276,6 +383,10 @@ class MapInteraction {
         if (e.touches.length === 0) {
             this._dragging  = false;
             this._pinchDist = null;
+            // Launch inertia on touch release
+            if (Math.hypot(this._velX, this._velY) > INERTIA_MIN_PX) {
+                this._runInertia();
+            }
         } else if (e.touches.length === 1) {
             // Went from pinch to single finger — reset drag
             this._dragging  = true;

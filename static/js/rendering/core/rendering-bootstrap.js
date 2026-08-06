@@ -75,8 +75,9 @@ async function _boot() {
 
     console.info('[Bootstrap] Step 1 ✓ — canvases acquired');
 
-    // ── Step 2: KeskustoriApp (Three.js) is optional — 2D renderer is standalone
-    console.info('[Bootstrap] Step 2 ✓ — proceeding without KeskustoriApp');
+    // ── Step 2: Wait for KeskustoriApp to be ready ─────────────────────────
+    await _waitForApp();
+    console.info('[Bootstrap] Step 2 ✓ — KeskustoriApp ready');
 
     // ── Step 3: Fetch road network from backend ─────────────────────────────
     const apiJson = await _fetchRoadNetwork();
@@ -131,8 +132,15 @@ async function _boot() {
     }
     const projector = new window.SimProjector(mapCanvas, network.bounds);
     projector.resize();   // set physical pixel buffer from real CSS dimensions
-    projector.fit(); 
-    window._simProjector = projector;     // fit world into canvas — origin and scale now valid
+    projector.fit();      // fit world into canvas — origin and scale now valid
+
+    // Immediately animate to the intersection cluster so the default view
+    // shows the active Keskustori simulation area, not the full empty world.
+    if (typeof projector.fitIntersections === 'function') {
+        projector.fitIntersections(network.intersections);
+    }
+
+    window._simProjector = projector;
 
     console.info('[Bootstrap] Step 6 ✓ — SimProjector ready, scale:', projector.scale.toFixed(4));
 
@@ -140,7 +148,9 @@ async function _boot() {
     if (typeof window.MapLayerManager !== 'function') {
         throw new Error('[Bootstrap] MapLayerManager not loaded — check script order');
     }
-    const layerManager = new window.MapLayerManager(mapCanvas, projector, network, supplement);
+    const layerManager = new window.MapLayerManager(mapCanvas,
+        projector, network, supplement);
+    console.info('[Bootstrap] Step 7 ✓ — MapLayerManager constructed');
 
     // ── Step 8: Register layer renderers ───────────────────────────────────
     _registerLayers(layerManager, network, supplement);
@@ -152,9 +162,8 @@ async function _boot() {
     }
     const viewController = new window.ViewModeController(
         simCanvas, mapCanvas, layerManager,
-        { initialMode: 'MAP_2D' }
+        { initialMode: 'SIM_3D' }
     );
-    viewController.showMap();
     console.info('[Bootstrap] Step 9 ✓ — ViewModeController ready, mode:', viewController.mode);
 
     // ── Step 10: Initialize MapLayerManager (starts render loop) ───────────
@@ -177,20 +186,7 @@ async function _boot() {
         console.warn('[Bootstrap] Step 10a ⚠ — VehicleOverlayRenderer not found; updateVehicles is a no-op');
     }
 
-    // ── Step 10b: Wire traffic-light update hook ─────────────────────────
-    const trafficSignalLayer = layerManager.getLayer('TrafficSignalRenderer');
-    if (trafficSignalLayer && typeof trafficSignalLayer.updateSignals === 'function') {
-        window.updateTrafficLights = (lights) => {
-            trafficSignalLayer.updateSignals(lights);
-            layerManager.markDirty();
-        };
-        console.info('[Bootstrap] Step 10b ✓ — window.updateTrafficLights wired to TrafficSignalRenderer');
-    } else {
-        window.updateTrafficLights = () => {};
-        console.warn('[Bootstrap] Step 10b ⚠ — TrafficSignalRenderer not found; updateTrafficLights is a no-op');
-    }
-
-    // ── Step 10c: Wire V2V message update hook ──────────────────────────────
+    // ── Step 10b: Wire V2V message update hook ──────────────────────────────
     // Parallel to window.updateVehicles.
     // Called by SimApiClient after processing state.messages.
     // Updates V2VMessageStore (vehicle positions + messages) then marks dirty.
@@ -200,10 +196,10 @@ async function _boot() {
             window.v2vMessageStore.update(messages, state.tick);   // ← correct
             layerManager.markDirty();
         };
-        console.info('[Bootstrap] Step 10c ✓ — window.updateMessages wired to V2VMessageStore');
+        console.info('[Bootstrap] Step 10b ✓ — window.updateMessages wired to V2VMessageStore');
     } else {
         window.updateMessages = () => {};
-        console.warn('[Bootstrap] Step 10c ⚠ — V2VMessageStore not found; updateMessages is a no-op');
+        console.warn('[Bootstrap] Step 10b ⚠ — V2VMessageStore not found; updateMessages is a no-op');
     }
 
     // ── Step 11: Force one dirty frame so roads appear immediately ──────────
@@ -226,6 +222,25 @@ async function _boot() {
         supplement,
     });
 
+    // ── Step 14: Expose camera control helpers on window ───────────────────
+    // Allows external UI code (vehicle list, control panel) to trigger follow.
+    // Usage:  window.followVehicle(uid)  /  window.stopFollow()
+    window.followVehicle = (uid) => {
+        if (typeof projector.followVehicle === 'function') {
+            projector.followVehicle(uid);
+            interaction.enable?.(); // ensure interaction is running
+            layerManager.markDirty();
+            console.info('[Bootstrap] followVehicle()', uid);
+        }
+    };
+    window.stopFollow = () => {
+        if (typeof projector.stopFollow === 'function') {
+            projector.stopFollow();
+            layerManager.markDirty();
+            console.info('[Bootstrap] stopFollow()');
+        }
+    };
+
     console.info(
         '%c[Bootstrap] 2D rendering infrastructure READY ✓',
         'color: #00d4ff; font-weight: bold; font-size: 13px'
@@ -233,6 +248,7 @@ async function _boot() {
     console.info('[Bootstrap] Access via window.mapRenderer');
     console.info('[Bootstrap] To test map view: window.mapRenderer.viewController.showMap()');
     console.info('[Bootstrap] To enable interaction: window.mapRenderer.interaction.enable()');
+    console.info('[Bootstrap] Camera: window.followVehicle(uid) / window.stopFollow() / Escape key');
 }
 
 // ---------------------------------------------------------------------------

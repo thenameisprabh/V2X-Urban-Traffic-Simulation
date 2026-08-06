@@ -268,6 +268,26 @@ class MapLayerManager {
         // Schedule next frame immediately so timing is consistent
         this._rafHandle = requestAnimationFrame(this._loop.bind(this));
 
+        // ── Tick projector: advance animations + follow smoothing ─────────
+        // tick() returns true when the camera moved this frame.
+        // We read the latest vehicle list from the vehicle layer so the
+        // projector can locate the followed vehicle without importing it.
+        const vehicleLayer = this.getLayer('VehicleOverlayRenderer');
+        const vehicles     = vehicleLayer?._vehicles ?? null;
+        if (typeof this._projector.tick === 'function') {
+            if (this._projector.tick(timestamp, vehicles)) {
+                this._dirty = true;
+            }
+        }
+
+        // ── Tick interaction: drain smooth-zoom accumulator ───────────────
+        // MapInteraction may expose a tickZoom() for accumulated wheel deltas.
+        if (this._interaction && typeof this._interaction.tickZoom === 'function') {
+            if (this._interaction.tickZoom()) {
+                this._dirty = true;
+            }
+        }
+
         // Frame rate cap
         if (timestamp - this._lastFrameTime < MIN_FRAME_MS) return;
 
@@ -308,7 +328,6 @@ class MapLayerManager {
         ctx.restore();
     }
 
-
     // -----------------------------------------------------------------------
     // Private — ResizeObserver setup
     // -----------------------------------------------------------------------
@@ -338,23 +357,21 @@ class MapLayerManager {
 
 /**
  * Safely calls a method on a layer renderer.
- * Guards against scaffolds that have not yet implemented the method,
- * and against runtime errors that should not crash the whole render loop.
+ * Returns the method's return value, or undefined if the method is absent or throws.
  *
- * @param {object}   layer   The layer renderer instance.
- * @param {string}   method  Method name to call.
- * @param {Array}    args    Arguments to pass.
- * @param {string}   name    Layer name for logging.
+ * @param {object}   layer   Layer renderer instance.
+ * @param {string}   method  Method name.
+ * @param {Array}    args    Arguments array.
+ * @param {string}   name    Layer name for error messages.
+ * @returns {*}
  */
-async function _safeCall(layer, method, args, name) {
-    if (typeof layer[method] !== 'function') return;
+function _safeCall(layer, method, args, name) {
+    if (typeof layer[method] !== 'function') return undefined;
     try {
-        await layer[method](...args);
+        return layer[method](...args);
     } catch (err) {
-        // Log full error including stack so silent failures are visible
-        console.error(`[MapLayerManager] Error in ${name}.${method}():`, err);
-        console.error(`[MapLayerManager] Stack:`, err.stack ?? '(no stack)');
-        // Do not rethrow — one broken layer must not crash the loop
+        console.error(`[MapLayerManager] ${name}.${method}() threw:`, err);
+        return undefined;
     }
 }
 
