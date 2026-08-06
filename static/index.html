@@ -1362,15 +1362,12 @@
        SIMULATION VIEWPORT (Your existing canvas goes here)
   ======================================================== -->
   <div id="simulation-viewport">
-    <!--
-      ✅ DROP YOUR EXISTING SIMULATION CANVAS / RENDERER HERE.
-      Replace this placeholder with your real sim container.
-      Nothing inside changes — only the UI around it does.
-    -->
-    <canvas id="sim-canvas"></canvas>
-    <canvas id="map-canvas"></canvas>
-
-    <div id="atmos-overlay"></div>
+    <div id="canvas-container">
+      <canvas id="sim-canvas"></canvas>
+      <canvas id="map-canvas"></canvas>
+      <div id="atmos-overlay"></div>
+    </div>
+  </div>
 
     <!-- HUD Overlays -->
     <div class="hud-overlay" id="map-hud">

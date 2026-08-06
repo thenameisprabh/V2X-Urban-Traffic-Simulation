@@ -1,41 +1,19 @@
 /* ============================================================
-   rendering.css
-   Canvas layering and map container styles for the V2X
-   rendering system.
+   rendering.css  —  Canvas layering for KESKUSTORI V2X
+   Active renderer: #map-canvas (2D pipeline)
+   #sim-canvas: kept in DOM but hidden (Three.js decommissioned)
+============================================================ */
 
-   The simulation view consists of two stacked canvas elements:
-     #map-canvas        — 2D Canvas rendering layer (primary)
-     #simulation-canvas — Three.js WebGL layer (optional 3D mode)
-
-   Both occupy the same container and are positioned absolutely
-   so they overlap perfectly. The active layer is shown; the
-   inactive layer is hidden and its render loop paused.
-   ============================================================ */
-
-/* ── Canvas Container ───────────────────────────────────────── */
-/* =============================================================
-   MAP CANVAS — absolute overlay so it stacks over #sim-canvas
-   Phase 1B: canvas is transparent until Phase 2 renders roads
-============================================================= */
-#map-canvas {
-    position: absolute;
-    inset: 0;
-    width: 100% !important;
-    height: 100% !important;
-    pointer-events: none; /* Phase 1B: MapInteraction re-enables this */
-    z-index: 2;           /* above sim-canvas (z-index auto), below HUD overlays */
-}
-
+/* ── Canvas container ────────────────────────────────────── */
 #canvas-container {
   position: relative;
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #0f0f1a; /* fallback before any canvas renders */
+  background: #0d0d18;
 }
 
-/* ── Shared canvas rules ────────────────────────────────────── */
-
+/* All canvases fill the container absolutely */
 #canvas-container canvas {
   position: absolute;
   top: 0;
@@ -45,55 +23,43 @@
   display: block;
 }
 
-/* ── 2D map canvas ──────────────────────────────────────────── */
+/* ── #sim-canvas  (Three.js — decommissioned) ─────────────── */
+/* Hidden behind map-canvas, not removed so IDs still resolve  */
+#sim-canvas {
+  z-index: 0;
+  display: block;
+  opacity: 0;
+  pointer-events: none;
+}
 
+/* ── #map-canvas  (2D active renderer) ───────────────────── */
+/* MUST be visible and on top — this is the primary surface   */
 #map-canvas {
   z-index: 1;
-  /* Hidden by default — ViewModeController manages visibility */
-  display: none;
+  display: block !important;   /* override any JS/legacy "display:none" */
+  opacity: 1 !important;
+  pointer-events: auto;
 }
 
-/* ── Three.js canvas ────────────────────────────────────────── */
-
-#simulation-canvas {
-  z-index: 2;
-  /* Visible by default — existing behaviour preserved */
-  display: block;
-}
-
-/* ── Atmospheric overlay ────────────────────────────────────── */
-/*
-   A CSS-only radial gradient that sits above both canvases
-   and produces a subtle edge-darkening atmosphere effect.
-   This is a DOM overlay, not a canvas draw call — zero cost
-   on the canvas render pipeline.
-*/
-
+/* ── Atmospheric vignette overlay ────────────────────────── */
 #atmos-overlay {
   position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 10;
-  pointer-events: none; /* never intercepts mouse/touch events */
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 2;
+  pointer-events: none;
   background: radial-gradient(
     ellipse at center,
-    rgba(0, 0, 0, 0)    0%,
-    rgba(0, 0, 0, 0)    40%,
-    rgba(0, 0, 0, 0.12) 70%,
-    rgba(0, 0, 0, 0.35) 100%
+    rgba(0,0,0,0)    0%,
+    rgba(0,0,0,0)    40%,
+    rgba(0,0,0,0.10) 70%,
+    rgba(0,0,0,0.28) 100%
   );
 }
 
-/* ── UI panels must sit above all canvas layers ─────────────── */
-/*
-   Any existing UI panel that needs to appear above the canvas
-   stack must have z-index > 10.
-   This rule documents the z-index contract for the whole app:
-
-   z-index 1   — #map-canvas (2D layer)
-   z-index 2   — #simulation-canvas (Three.js layer)
-   z-index 10  — #atmos-overlay (CSS atmosphere)
-   z-index 20+ — UI panels, controls, HUD elements
-*/
+/* ── z-index contract ─────────────────────────────────────
+   0   #sim-canvas        (hidden, behind everything)
+   1   #map-canvas        (active 2D renderer)
+   2   #atmos-overlay     (CSS atmosphere effect)
+   20+ UI panels / HUD elements (defined in index.html)
+──────────────────────────────────────────────────────── */

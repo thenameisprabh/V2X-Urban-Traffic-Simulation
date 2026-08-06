@@ -4,21 +4,19 @@
  *
  * Execution order:
  *   1. Wait for DOMContentLoaded
- *   2. Wait for KeskustoriApp to finish its own initialisation (Three.js sim)
- *   3. Fetch /api/road-network → roadNetworkAdapter → RenderNetwork
- *   4. Load OSMSupplementProvider (empty datasets in Phase 1B — correct)
- *   5. Construct SimProjector, MapLayerManager, ViewModeController, MapInteraction
- *   6. Register all layer renderers (Phase 0 scaffolds — all no-op safely)
- *   7. Initialize MapLayerManager → starts render loop
- *   8. Enable MapInteraction
- *   9. Expose window.mapRenderer for console inspection and testing
+ *   2. Fetch /api/road-network → roadNetworkAdapter → RenderNetwork
+ *   3. Load OSMSupplementProvider (empty datasets in Phase 1B — correct)
+ *   4. Construct SimProjector, MapLayerManager, ViewModeController, MapInteraction
+ *   5. Register all layer renderers
+ *   6. Initialize MapLayerManager → starts render loop
+ *   7. Wire window.updateVehicles / window.updateMessages hooks
+ *   8. Expose window.mapRenderer for console inspection and testing
  *
  * Isolation contract:
  *   - Does NOT modify main-app.js or KeskustoriApp in any way
  *   - Does NOT share state with Three.js renderer
  *   - The only shared resources are the DOM canvas elements
  *   - If bootstrap fails at any step, it logs clearly and stops gracefully
- *     without affecting the running simulation
  *
  * @module rendering/core/rendering-bootstrap
  */
@@ -29,13 +27,7 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-/** How long to wait for KeskustoriApp to appear on window (ms). */
-const APP_WAIT_TIMEOUT_MS = 10_000;
-
-/** Polling interval while waiting for KeskustoriApp (ms). */
-const APP_WAIT_POLL_MS = 100;
-
-/** Road network API endpoint — same one KeskustoriApp uses. */
+/** Road network API endpoint. */
 const ROAD_NETWORK_ENDPOINT = '/api/road-network';
 
 /** Supplement data paths (empty JSON files are fine — 404 is handled). */
@@ -50,7 +42,8 @@ const SUPPLEMENT_PATHS = {
 // ---------------------------------------------------------------------------
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Small delay so KeskustoriApp DOMContentLoaded handler runs first
+    // Small delay to let other DOMContentLoaded handlers (UI wiring, etc.) run first.
+    // The 2D pipeline has no dependency on any legacy app initialisation.
     setTimeout(() => _boot().catch(_fatalError), 50);
 });
 
@@ -73,24 +66,27 @@ async function _boot() {
     if (!simCanvas) throw new Error('[Bootstrap] #sim-canvas not found in DOM');
     if (!mapCanvas) throw new Error('[Bootstrap] #map-canvas not found in DOM');
 
-    console.info('[Bootstrap] Step 1 ✓ — canvases acquired');
+    console.info('[Bootstrap] Step 1 ✓ — canvases acquired',
+        '| sim-canvas:', simCanvas.id,
+        '| map-canvas:', mapCanvas.id);
 
-    // ── Step 2: Wait for KeskustoriApp to be ready ─────────────────────────
-    await _waitForApp();
-    console.info('[Bootstrap] Step 2 ✓ — KeskustoriApp ready');
-
-    // ── Step 3: Fetch road network from backend ─────────────────────────────
+    // ── Step 2: Fetch road network from backend ─────────────────────────────
+    // NOTE: The previous Step 2 waited for window.app (KeskustoriApp), but
+    // main-app.js is not loaded in index.html, so window.app was never set
+    // and the 10-second timeout killed the entire bootstrap before it touched
+    // the network or canvas. The 2D pipeline has no runtime dependency on
+    // KeskustoriApp; that gate has been removed.
     const apiJson = await _fetchRoadNetwork();
-    console.info('[Bootstrap] Step 3 ✓ — road network fetched');
+    console.info('[Bootstrap] Step 2 ✓ — road network fetched');
 
-    // ── Step 4: Adapt to RenderNetwork ─────────────────────────────────────
+    // ── Step 3: Adapt to RenderNetwork ─────────────────────────────────────
     const rawNetwork = window.roadNetworkAdapter(apiJson);
 
     if (!rawNetwork || typeof rawNetwork !== 'object') {
         throw new Error('[Bootstrap] roadNetworkAdapter returned null/undefined');
     }
 
-    // FIX: The adapter returns `roads` (not `ways`).
+    // The adapter returns `roads` (not `ways`).
     // RoadRenderer reads network.roads — this must be preserved here.
     const network = {
         ...rawNetwork,
@@ -104,7 +100,7 @@ async function _boot() {
         meta          : rawNetwork.meta   || {},
     };
 
-    console.info('[Bootstrap] Step 4 ✓ — RenderNetwork built:', {
+    console.info('[Bootstrap] Step 3 ✓ — RenderNetwork built:', {
         roads         : network.roads.length,
         intersections : network.intersections.length,
         signals       : network.signals.length,
@@ -112,7 +108,7 @@ async function _boot() {
         crosswalks    : network.crosswalks.length,
     });
 
-    // ── Step 5: Load OSM supplement (empty datasets — correct for Phase 2) ─
+    // ── Step 4: Load OSM supplement ─────────────────────────────────────────
     if (!window.OSMSupplementProvider && window.OSMSupplement) {
         window.OSMSupplementProvider = window.OSMSupplement;
     }
@@ -121,12 +117,12 @@ async function _boot() {
     }
     const supplement = new window.OSMSupplementProvider(SUPPLEMENT_PATHS);
     await supplement.load();
-    console.info('[Bootstrap] Step 5 ✓ — supplement loaded (buildings:',
+    console.info('[Bootstrap] Step 4 ✓ — supplement loaded (buildings:',
         supplement.getBuildings().length,
         'vegetation:', supplement.getVegetation().length,
         'water:', supplement.getWater().length, ')');
 
-    // ── Step 6: Construct SimProjector and fit to world bounds ─────────────
+    // ── Step 5: Construct SimProjector and fit to world bounds ─────────────
     if (typeof window.SimProjector !== 'function') {
         throw new Error('[Bootstrap] SimProjector not loaded — check script order');
     }
@@ -134,44 +130,44 @@ async function _boot() {
     projector.resize();   // set physical pixel buffer from real CSS dimensions
     projector.fit();      // fit world into canvas — origin and scale now valid
 
-    // Immediately animate to the intersection cluster so the default view
-    // shows the active Keskustori simulation area, not the full empty world.
     if (typeof projector.fitIntersections === 'function') {
         projector.fitIntersections(network.intersections);
     }
 
     window._simProjector = projector;
 
-    console.info('[Bootstrap] Step 6 ✓ — SimProjector ready, scale:', projector.scale.toFixed(4));
+    console.info('[Bootstrap] Step 5 ✓ — SimProjector ready, scale:', projector.scale.toFixed(4));
 
-    // ── Step 7: Construct MapLayerManager ──────────────────────────────────
+    // ── Step 6: Construct MapLayerManager ──────────────────────────────────
     if (typeof window.MapLayerManager !== 'function') {
         throw new Error('[Bootstrap] MapLayerManager not loaded — check script order');
     }
-    const layerManager = new window.MapLayerManager(mapCanvas,
-        projector, network, supplement);
-    console.info('[Bootstrap] Step 7 ✓ — MapLayerManager constructed');
+    const layerManager = new window.MapLayerManager(mapCanvas, projector, network, supplement);
+    console.info('[Bootstrap] Step 6 ✓ — MapLayerManager constructed');
 
-    // ── Step 8: Register layer renderers ───────────────────────────────────
+    // ── Step 7: Register layer renderers ───────────────────────────────────
     _registerLayers(layerManager, network, supplement);
-    console.info('[Bootstrap] Step 8 ✓ — layers registered');
+    console.info('[Bootstrap] Step 7 ✓ — layers registered');
 
-    // ── Step 9: Construct ViewModeController ───────────────────────────────
+    // ── Step 8: Construct ViewModeController ───────────────────────────────
+    // IMPORTANT: initialMode is MAP_2D — the 2D pipeline is the active renderer.
+    // SIM_3D mode hides #map-canvas (display:none, opacity:0) and pauses the
+    // render loop, so nothing would ever appear on screen.
     if (typeof window.ViewModeController !== 'function') {
         throw new Error('[Bootstrap] ViewModeController not loaded — check script order');
     }
     const viewController = new window.ViewModeController(
         simCanvas, mapCanvas, layerManager,
-        { initialMode: 'SIM_3D' }
+        { initialMode: 'MAP_2D' }
     );
-    console.info('[Bootstrap] Step 9 ✓ — ViewModeController ready, mode:', viewController.mode);
+    console.info('[Bootstrap] Step 8 ✓ — ViewModeController ready, mode:', viewController.mode);
 
-    // ── Step 10: Initialize MapLayerManager (starts render loop) ───────────
+    // ── Step 9: Initialize MapLayerManager (starts render loop) ────────────
     await layerManager.initialize();
-    console.info('[Bootstrap] Step 10 ✓ — render loop started');
+    console.info('[Bootstrap] Step 9 ✓ — render loop started');
 
-    // ── Step 10a: Wire vehicle update hook ─────────────────────────────────
-    // api-client.js calls window.updateVehicles(data.vehicles) at up to 60 Hz.
+    // ── Step 9a: Wire vehicle update hook ──────────────────────────────────
+    // api-client.js calls window.updateVehicles(data.vehicles) at up to 10 Hz.
     // We install that hook here, after initialize(), so the renderer instance
     // is guaranteed to be ready before any poll result can arrive.
     const vehicleLayer = layerManager.getLayer('VehicleOverlayRenderer');
@@ -180,39 +176,50 @@ async function _boot() {
             vehicleLayer.updateVehicles(vehicles);
             layerManager.markDirty();
         };
-        console.info('[Bootstrap] Step 10a ✓ — window.updateVehicles wired to VehicleOverlayRenderer');
+        console.info('[Bootstrap] Step 9a ✓ — window.updateVehicles wired to VehicleOverlayRenderer');
     } else {
         window.updateVehicles = () => {};
-        console.warn('[Bootstrap] Step 10a ⚠ — VehicleOverlayRenderer not found; updateVehicles is a no-op');
+        console.warn('[Bootstrap] Step 9a ⚠ — VehicleOverlayRenderer not found; updateVehicles is a no-op');
     }
 
-    // ── Step 10b: Wire V2V message update hook ──────────────────────────────
-    // Parallel to window.updateVehicles.
-    // Called by SimApiClient after processing state.messages.
-    // Updates V2VMessageStore (vehicle positions + messages) then marks dirty.
+    // ── Step 9b: Wire traffic-light update hook ─────────────────────────────
+    const signalLayer = layerManager.getLayer('TrafficSignalRenderer');
+    if (signalLayer && typeof signalLayer.updateSignals === 'function') {
+        window.updateTrafficLights = (lights) => {
+            signalLayer.updateSignals(lights);
+            layerManager.markDirty();
+        };
+        console.info('[Bootstrap] Step 9b ✓ — window.updateTrafficLights wired to TrafficSignalRenderer');
+    } else {
+        window.updateTrafficLights = () => {};
+        console.warn('[Bootstrap] Step 9b ⚠ — TrafficSignalRenderer.updateSignals not found; updateTrafficLights is a no-op');
+    }
+
+    // ── Step 9c: Wire V2V message update hook ──────────────────────────────
     if (window.v2vMessageStore) {
         window.updateMessages = (messages, vehicles, state) => {
             window.v2vMessageStore.updateVehiclePositions(vehicles);
-            window.v2vMessageStore.update(messages, state.tick);   // ← correct
+            window.v2vMessageStore.update(messages, state.tick);
             layerManager.markDirty();
         };
-        console.info('[Bootstrap] Step 10b ✓ — window.updateMessages wired to V2VMessageStore');
+        console.info('[Bootstrap] Step 9c ✓ — window.updateMessages wired to V2VMessageStore');
     } else {
         window.updateMessages = () => {};
-        console.warn('[Bootstrap] Step 10b ⚠ — V2VMessageStore not found; updateMessages is a no-op');
+        console.warn('[Bootstrap] Step 9c ⚠ — V2VMessageStore not found; updateMessages is a no-op');
     }
 
-    // ── Step 11: Force one dirty frame so roads appear immediately ──────────
+    // ── Step 10: Force one dirty frame so roads appear immediately ──────────
     layerManager.markDirty();
 
-    // ── Step 12: Construct MapInteraction ──────────────────────────────────
+    // ── Step 11: Construct MapInteraction ──────────────────────────────────
     if (typeof window.MapInteraction !== 'function') {
         throw new Error('[Bootstrap] MapInteraction not loaded — check script order');
     }
     const interaction = new window.MapInteraction(mapCanvas, projector, layerManager);
-    console.info('[Bootstrap] Step 12 ✓ — MapInteraction constructed (not enabled — SIM_3D mode)');
+    interaction.enable();   // MAP_2D mode — interaction active immediately
+    console.info('[Bootstrap] Step 11 ✓ — MapInteraction enabled');
 
-    // ── Step 13: Expose for testing and Phase 2+ wiring ────────────────────
+    // ── Step 12: Expose for testing and external UI wiring ─────────────────
     window.mapRenderer = Object.freeze({
         projector,
         layerManager,
@@ -222,13 +229,10 @@ async function _boot() {
         supplement,
     });
 
-    // ── Step 14: Expose camera control helpers on window ───────────────────
-    // Allows external UI code (vehicle list, control panel) to trigger follow.
-    // Usage:  window.followVehicle(uid)  /  window.stopFollow()
+    // Camera control helpers for UI panels and vehicle list
     window.followVehicle = (uid) => {
         if (typeof projector.followVehicle === 'function') {
             projector.followVehicle(uid);
-            interaction.enable?.(); // ensure interaction is running
             layerManager.markDirty();
             console.info('[Bootstrap] followVehicle()', uid);
         }
@@ -246,8 +250,6 @@ async function _boot() {
         'color: #00d4ff; font-weight: bold; font-size: 13px'
     );
     console.info('[Bootstrap] Access via window.mapRenderer');
-    console.info('[Bootstrap] To test map view: window.mapRenderer.viewController.showMap()');
-    console.info('[Bootstrap] To enable interaction: window.mapRenderer.interaction.enable()');
     console.info('[Bootstrap] Camera: window.followVehicle(uid) / window.stopFollow() / Escape key');
 }
 
@@ -296,25 +298,6 @@ function _registerLayers(mgr, network, supplement) {
 // ---------------------------------------------------------------------------
 
 /**
- * Waits for window.app (KeskustoriApp) to be defined.
- * @returns {Promise<void>}
- */
-function _waitForApp() {
-    return new Promise((resolve, reject) => {
-        const start = performance.now();
-        const poll = () => {
-            if (window.app) { resolve(); return; }
-            if (performance.now() - start > APP_WAIT_TIMEOUT_MS) {
-                reject(new Error('[Bootstrap] Timed out waiting for KeskustoriApp (window.app)'));
-                return;
-            }
-            setTimeout(poll, APP_WAIT_POLL_MS);
-        };
-        poll();
-    });
-}
-
-/**
  * Fetches the road network JSON from the backend.
  * @returns {Promise<object>}
  */
@@ -338,14 +321,13 @@ async function _fetchRoadNetwork() {
 }
 
 /**
- * Handles a fatal bootstrap error without crashing the simulation.
+ * Handles a fatal bootstrap error.
  * @param {Error} err
  */
 function _fatalError(err) {
     console.error('%c[Bootstrap] FATAL — 2D rendering failed to initialise',
         'color: #ff4444; font-weight: bold;');
     console.error('[Bootstrap]', err);
-    console.info('[Bootstrap] Three.js simulation continues unaffected.');
 }
 
 console.info('[Bootstrap] rendering-bootstrap.js loaded');
