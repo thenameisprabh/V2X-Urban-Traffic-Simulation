@@ -1,27 +1,17 @@
 /**
  * @file road-renderer.js
- * @description Phase 2 — Static road geometry renderer for the 2D map canvas.
+ * @description Multi-pass road geometry renderer for the 2D map canvas.
  *
- * Responsibilities:
- *   - Reads an immutable RenderNetwork and draws road geometry onto the 2D canvas.
- *   - Implements a multi-pass rendering pipeline:
- *       Pass 1 — Drop shadows         (depth cue, controlled by drawShadow flag)
- *       Pass 2 — Road casing          (outline/kerb, controlled by drawCasing flag)
- *       Pass 3 — Road surface fill    (always drawn — this is the road itself)
- *       Pass 4 — Lane markings        (dashes / edge lines, controlled by drawMarkings flag)
- *       Pass 5 — Centre lines         (yellow / white dividers, controlled by drawCentreLine flag)
- *
- * This renderer MUST NOT:
- *   - fetch data from the backend
- *   - read vehicle state, V2V state, signal state, or AI state
- *   - modify simulation state
- *   - know about Three.js or the sim-canvas
- *   - perform business logic of any kind
- *
- * Rendering is driven entirely by:
- *   - network:   RenderNetwork (immutable, from roadNetworkAdapter)
- *   - projector: SimProjector  (coordinate maths only)
- *   - roadStyle: RENDER_CONSTANTS.ROAD_STYLE (cached at initialize())
+ * Passes (in draw order):
+ *   1  Grass verge      — green band beyond road casing
+ *   2  Drop shadow      — soft blur below road body
+ *   3  Road casing      — kerb / edge outline
+ *   4  Road surface     — primary asphalt fill
+ *   5  Lane separators  — dashed white dividers between same-direction lanes
+ *   6  Centre line      — dashed yellow divider on two-way roads
+ *   7  Edge lines       — solid white lines at both road edges
+ *   8  Stop lines       — thick white bars at intersection approaches
+ *   9  Road arrows      — direction chevrons painted on lane surface
  *
  * @module rendering/layers/road-renderer
  */
@@ -29,175 +19,91 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// Internal constants
+// Constants
 // ---------------------------------------------------------------------------
 
-/** Minimum road width in CSS pixels below which a road is skipped entirely.
- *  Prevents sub-pixel artefacts at extreme zoom-out levels. */
-const MIN_DRAW_WIDTH_PX = 0.5;
+const MIN_DRAW_WIDTH_PX      = 0.5;
+const SHADOW_ALPHA           = 0.22;
+const SHADOW_OFFSET_FRACTION = 0.55;
+const LANE_DASH_LENGTH_M     = 3.0;
+const LANE_DASH_GAP_M        = 5.0;
+const CENTRE_DASH_LENGTH_M   = 4.0;
+const CENTRE_DASH_GAP_M      = 3.0;
+const EDGE_LINE_FRACTION     = 0.038;
+const EDGE_LINE_MIN_PX       = 0.9;
 
-/** Alpha for the drop-shadow pass. Kept low so shadows don't dominate. */
-const SHADOW_ALPHA = 0.18;
+/** Grass verge width each side of the road casing, in metres. */
+const GRASS_VERGE_M          = 3.0;
+/** Grass colour — dark desaturated green matching the night-city palette. */
+const GRASS_COLOUR           = '#162212';
+const GRASS_STROKE_COLOUR    = '#1a2814';
 
-/** Shadow offset as a fraction of road width. */
-const SHADOW_OFFSET_FRACTION = 0.6;
+/** Stop-line depth in metres (perpendicular to travel direction). */
+const STOP_LINE_DEPTH_M      = 0.8;
+/** Stop-line setback from physical intersection centre in metres. */
+const STOP_LINE_SETBACK_M    = 18;
 
-/** Lane dash length in metres. */
-const LANE_DASH_LENGTH_M = 3.0;
-
-/** Lane dash gap in metres. */
-const LANE_DASH_GAP_M = 5.0;
-
-/** Centre-line dash length in metres (used on two-way roads). */
-const CENTRE_DASH_LENGTH_M = 4.0;
-
-/** Centre-line dash gap in metres. */
-const CENTRE_DASH_GAP_M = 3.0;
-
-/** Edge-line width as a fraction of road width. */
-const EDGE_LINE_FRACTION = 0.04;
-
-/** Minimum edge-line width in CSS pixels. */
-const EDGE_LINE_MIN_PX = 0.8;
+/** Arrow chevron size in metres (half-length along lane axis). */
+const ARROW_HALF_LEN_M       = 3.5;
+const ARROW_HALF_WID_M       = 1.2;
+/** How far from the road start/end to place arrows (fraction of road length). */
+const ARROW_POSITION_FRAC    = 0.25;
 
 // ---------------------------------------------------------------------------
 // RoadRenderer
 // ---------------------------------------------------------------------------
 
-/**
- * Renders static road geometry in multiple passes onto the 2D map canvas.
- *
- * Lifecycle (called by MapLayerManager):
- *   initialize(ctx, projector, network, supplement) — cache projector & style, project geometry
- *   render(ctx, projector, timestamp)               — draw all passes
- *   resize(cssWidth, cssHeight)                     — invalidate projected geometry cache
- *   destroy()                                       — release all references
- */
 class RoadRenderer {
 
-    /**
-     * @param {object} network     RenderNetwork from roadNetworkAdapter.
-     * @param {object} supplement  OSMSupplementProvider (not used by roads — accepted for interface compatibility).
-     */
     constructor(network, supplement) {
-        /** @type {object} Immutable RenderNetwork. */
-        this._network    = network    ?? {};
-
-        /** @type {object} Road style configuration — populated at initialize(). */
+        this._network    = network ?? {};
         this._roadStyle  = null;
-
-        /** @type {CanvasRenderingContext2D} Owned by MapLayerManager — do not close. */
         this._ctx        = null;
-
-        /** @type {SimProjector} */
         this._projector  = null;
-
-        /**
-         * Projected road geometry cache.
-         * Each entry: { road: RenderRoad, pts: Array<{x,y}>, widthPx: number, style: object }
-         * Rebuilt on initialize() and on resize().
-         * @type {Array<object>}
-         */
         this._projected  = [];
-
-        /** @type {boolean} Whether projected geometry is valid. */
         this._cacheValid = false;
-
         console.info('[RoadRenderer] constructed');
     }
 
     // -----------------------------------------------------------------------
-    // Lifecycle — MapLayerManager interface
+    // Lifecycle
     // -----------------------------------------------------------------------
 
-    /**
-     * Called once by MapLayerManager before the first render.
-     * Caches style configuration and projects road geometry.
-     *
-     * @param {CanvasRenderingContext2D} ctx
-     * @param {SimProjector}             projector
-     * @param {object}                   network    RenderNetwork
-     * @param {object}                   supplement OSMSupplementProvider (unused here)
-     */
     initialize(ctx, projector, network, supplement) {
         this._ctx       = ctx;
         this._projector = projector;
+        if (network && network.roads) this._network = network;
 
-        // Use the network passed by MapLayerManager (authoritative) in preference
-        // to the constructor argument, which is kept only for future direct instantiation.
-        if (network && network.roads) {
-            this._network = network;
-        }
-
-        // ── Cache road style configuration ───────────────────────────────
-        // Read once here. Never read window globals during render().
-        // Supports both window.RENDER_CONSTANTS.ROAD_STYLE and the
-        // direct window.ROAD_STYLE export for resilience during load order
-        // edge cases.
-        this._roadStyle = (
-            window.RENDER_CONSTANTS?.ROAD_STYLE ??
-            window.ROAD_STYLE ??
-            {}
-        );
-
-        // Project all road geometry into canvas pixel space.
-                // Project all road geometry into canvas pixel space.
+        this._roadStyle = window.RENDER_CONSTANTS?.ROAD_STYLE ?? window.ROAD_STYLE ?? {};
         this._buildProjectedCache();
 
-        // ✅ Signal readiness — required by MapLayerManager layer verification
         this._ready       = true;
         this._initialised = true;
-
-        console.info('[RoadRenderer] initialized —',
-            this._projected.length, 'roads projected');
+        console.info('[RoadRenderer] initialized —', this._projected.length, 'roads projected');
     }
 
-
-    /**
-     * Draws all roads in pass order. Called every dirty frame by MapLayerManager.
-     *
-     * @param {CanvasRenderingContext2D} ctx
-     * @param {SimProjector}             projector
-     * @param {number}                   timestamp  DOMHighResTimeStamp
-     */
     render(ctx, projector, timestamp) {
         if (!this._cacheValid) {
-            // Geometry invalidated (e.g. after resize) — rebuild before drawing.
             this._projector = projector;
             this._buildProjectedCache();
         }
-
         if (this._projected.length === 0) return;
 
-        // ── Multi-pass pipeline ───────────────────────────────────────────
-        // Each pass is a full iteration over all roads. This is intentional:
-        // mixing passes per-road would cause incorrect z-ordering at intersections
-        // (e.g. a shadow of a minor road drawn over the surface of a major road).
+        this._passGrass(ctx);
         this._passShadow(ctx);
         this._passCasing(ctx);
         this._passSurface(ctx);
-        this._passMarkings(ctx);
+        this._passLaneSeparators(ctx);
         this._passCentreLine(ctx);
+        this._passEdgeLines(ctx);
+        this._passStopLines(ctx);
+        this._passArrows(ctx);
     }
 
-    /**
-     * Called by MapLayerManager when the canvas is resized.
-     * Projected geometry is in CSS pixels and must be rebuilt after every resize.
-     *
-     * @param {number} cssWidth
-     * @param {number} cssHeight
-     */
     resize(cssWidth, cssHeight) {
-        // Invalidate cache — geometry will be rebuilt on the next render() call.
-        // We do NOT rebuild here because the projector may not yet have updated
-        // its internal dimensions when resize() is called.
         this._cacheValid = false;
-        console.info('[RoadRenderer] resize — cache invalidated');
     }
 
-    /**
-     * Releases all references. Called by MapLayerManager.destroy().
-     */
     destroy() {
         this._projected  = [];
         this._ctx        = null;
@@ -209,297 +115,341 @@ class RoadRenderer {
     }
 
     // -----------------------------------------------------------------------
-    // Private — Geometry projection cache
+    // Geometry cache
     // -----------------------------------------------------------------------
 
-    /**
-     * Projects all road centrelines into CSS pixel space and computes pixel widths.
-     * Result stored in this._projected for reuse across frames.
-     *
-     * This runs on initialize() and after resize(). It does NOT run every frame.
-     * @private
-     */
     _buildProjectedCache() {
-        const proj   = this._projector;
-        const roads  = this._network.roads;    // ← network.roads (not network.ways)
-
+        const proj  = this._projector;
+        const roads = this._network.roads;
         if (!proj || !Array.isArray(roads)) {
             this._projected  = [];
             this._cacheValid = false;
-            console.warn('[RoadRenderer] _buildProjectedCache — no projector or roads array');
             return;
         }
 
         this._projected = [];
-
         for (const road of roads) {
             const pts = _projectGeometry(road.centreline ?? road.geometry, proj);
-
-            if (pts.length < 2) continue;           // degenerate — skip
-
+            if (pts.length < 2) continue;
             const style   = _styleFor(road, this._roadStyle);
             const widthPx = proj.metresToPixels(road.totalWidthM ?? 7);
-
-            if (widthPx < MIN_DRAW_WIDTH_PX) continue;  // sub-pixel — skip
-
+            if (widthPx < MIN_DRAW_WIDTH_PX) continue;
             this._projected.push({ road, pts, widthPx, style });
         }
-
         this._cacheValid = true;
-
-        console.info('[RoadRenderer] geometry cache built —',
-            this._projected.length, '/', roads.length, 'roads');
+        console.info('[RoadRenderer] cache built —', this._projected.length, '/', roads.length, 'roads');
     }
 
     // -----------------------------------------------------------------------
-    // Private — Rendering passes
+    // Pass 1 — Grass verge
     // -----------------------------------------------------------------------
 
-    /**
-     * Pass 1 — Drop shadow.
-     * A blurred, offset, semi-transparent stroke drawn below the road body.
-     * Gives depth cues at intersections. Controlled by style.drawShadow.
-     * @param {CanvasRenderingContext2D} ctx
-     * @private
-     */
-    _passShadow(ctx) {
+    _passGrass(ctx) {
+        const proj = this._projector;
         ctx.save();
 
         for (const { pts, widthPx, style } of this._projected) {
-            // ── Feature flag ──────────────────────────────────────────────
-            if (!style.drawShadow) continue;
+            if (!style.drawCasing) continue;   // only roads with kerbs get a verge
 
-            const offsetPx = widthPx * SHADOW_OFFSET_FRACTION;
+            const vergePx   = proj.metresToPixels(GRASS_VERGE_M);
+            const casingAdd = proj.metresToPixels(style.casingWidthM ?? 0.5);
+            const totalPx   = widthPx + casingAdd * 2 + vergePx * 2;
 
             ctx.beginPath();
-            _tracePts(ctx, pts, offsetPx * 0.25, offsetPx * 0.25);
+            _tracePts(ctx, pts);
+            ctx.strokeStyle = GRASS_COLOUR;
+            ctx.lineWidth   = totalPx;
+            ctx.lineCap     = 'round';
+            ctx.lineJoin    = 'round';
+            ctx.stroke();
+        }
 
+        ctx.restore();
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 2 — Drop shadow
+    // -----------------------------------------------------------------------
+
+    _passShadow(ctx) {
+        ctx.save();
+        for (const { pts, widthPx, style } of this._projected) {
+            if (!style.drawShadow) continue;
+            const offsetPx = widthPx * SHADOW_OFFSET_FRACTION;
+            ctx.beginPath();
+            _tracePts(ctx, pts, offsetPx * 0.25, offsetPx * 0.25);
             ctx.strokeStyle = `rgba(0,0,0,${SHADOW_ALPHA})`;
             ctx.lineWidth   = widthPx + offsetPx;
             ctx.lineCap     = 'round';
             ctx.lineJoin    = 'round';
-            ctx.filter      = `blur(${(offsetPx * 0.5).toFixed(1)}px)`;
+            ctx.filter      = `blur(${(offsetPx * 0.45).toFixed(1)}px)`;
             ctx.stroke();
         }
-
-        ctx.filter = 'none';  // always reset — filter is expensive if left on
+        ctx.filter = 'none';
         ctx.restore();
     }
 
-    /**
-     * Pass 2 — Road casing (outline / kerb).
-     * A slightly wider stroke in the casing colour drawn behind the surface.
-     * Gives a kerb or edge effect. Controlled by style.drawCasing.
-     * @param {CanvasRenderingContext2D} ctx
-     * @private
-     */
+    // -----------------------------------------------------------------------
+    // Pass 3 — Road casing (kerb)
+    // -----------------------------------------------------------------------
+
     _passCasing(ctx) {
+        const proj = this._projector;
         ctx.save();
-
         for (const { pts, widthPx, style } of this._projected) {
-            // ── Feature flag ──────────────────────────────────────────────
             if (!style.drawCasing) continue;
-
+            const casingPx = proj.metresToPixels(style.casingWidthM ?? 0.5);
             ctx.beginPath();
             _tracePts(ctx, pts);
-
-            ctx.strokeStyle = style.casingColour ?? style.edge ?? '#222222';
-            ctx.lineWidth   = widthPx + (style.casingWidthPx ?? 2);
+            ctx.strokeStyle = style.casingColour ?? '#222232';
+            ctx.lineWidth   = widthPx + casingPx * 2;
             ctx.lineCap     = 'round';
             ctx.lineJoin    = 'round';
             ctx.stroke();
         }
-
         ctx.restore();
     }
 
-    /**
-     * Pass 3 — Road surface fill.
-     * The primary road colour. Always drawn — this is the road itself.
-     * No feature flag: a road with no surface is not a road.
-     * @param {CanvasRenderingContext2D} ctx
-     * @private
-     */
+    // -----------------------------------------------------------------------
+    // Pass 4 — Road surface
+    // -----------------------------------------------------------------------
+
     _passSurface(ctx) {
         ctx.save();
-
         for (const { pts, widthPx, style } of this._projected) {
             ctx.beginPath();
             _tracePts(ctx, pts);
-
-            ctx.strokeStyle = style.colour ?? style.color ?? '#555555';
+            ctx.strokeStyle = style.surfaceColour ?? style.colour ?? '#2c2c3a';
             ctx.lineWidth   = widthPx;
             ctx.lineCap     = 'round';
             ctx.lineJoin    = 'round';
             ctx.stroke();
         }
-
         ctx.restore();
     }
 
-    /**
-     * Pass 4 — Lane markings (edge lines and inter-lane dashes).
-     * Drawn on top of the surface. Controlled by style.drawMarkings.
-     *
-     * Two sub-passes:
-     *   4a — White edge lines along both sides of the road.
-     *   4b — Dashed white lane-divider lines between lanes.
-     *
-     * @param {CanvasRenderingContext2D} ctx
-     * @private
-     */
-    _passMarkings(ctx) {
+    // -----------------------------------------------------------------------
+    // Pass 5 — Lane separators (dashed white, between same-direction lanes)
+    // -----------------------------------------------------------------------
+
+    _passLaneSeparators(ctx) {
+        const proj = this._projector;
         ctx.save();
 
-        const proj = this._projector;
-
         for (const { road, pts, widthPx, style } of this._projected) {
-            // ── Feature flag ──────────────────────────────────────────────
             if (!style.drawMarkings) continue;
 
             const laneCount = road.laneCount ?? 2;
+            if (laneCount < 2) continue;
 
-            // ── 4a — Edge lines ───────────────────────────────────────────
-            // One solid white line along each side of the road.
-            const edgePx = Math.max(EDGE_LINE_MIN_PX, widthPx * EDGE_LINE_FRACTION);
-            const halfW  = widthPx / 2;
+            const halfW     = widthPx / 2;
+            const dashOnPx  = proj.metresToPixels(LANE_DASH_LENGTH_M);
+            const dashOffPx = proj.metresToPixels(LANE_DASH_GAP_M);
+            const lineW     = Math.max(0.8, widthPx * 0.025);
 
-            // Left edge
-            const leftPts  = _offsetPolylinePx(pts, -(halfW - edgePx * 0.5));
-            // Right edge
-            const rightPts = _offsetPolylinePx(pts,  (halfW - edgePx * 0.5));
-
-            ctx.strokeStyle = 'rgba(255,255,255,0.75)';
-            ctx.lineWidth   = edgePx;
+            ctx.strokeStyle = 'rgba(255,255,255,0.80)';
+            ctx.lineWidth   = lineW;
             ctx.lineCap     = 'butt';
             ctx.lineJoin    = 'miter';
-            ctx.setLineDash([]);
+            ctx.setLineDash([dashOnPx, dashOffPx]);
 
-            if (leftPts.length >= 2) {
-                ctx.beginPath();
-                _tracePts(ctx, leftPts);
-                ctx.stroke();
-            }
-            if (rightPts.length >= 2) {
-                ctx.beginPath();
-                _tracePts(ctx, rightPts);
-                ctx.stroke();
-            }
-
-            // ── 4b — Inter-lane dashes ────────────────────────────────────
-            // One dashed line per internal lane boundary (laneCount - 1 lines
-            // for a two-way road, but the centre is handled by passCentreLine).
-            // On a two-way road: no inter-lane dashes (centre handled separately).
-            // On a one-way road with N lanes: N-1 dashed lines.
-            if (road.isOneway && laneCount > 1) {
-                const dashOnPx  = proj.metresToPixels(LANE_DASH_LENGTH_M);
-                const dashOffPx = proj.metresToPixels(LANE_DASH_GAP_M);
-
-                ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-                ctx.lineWidth   = Math.max(0.8, widthPx * 0.025);
-                ctx.setLineDash([dashOnPx, dashOffPx]);
-
+            if (road.isOneway) {
+                // One-way: N-1 separator lines
                 const laneW = widthPx / laneCount;
-
                 for (let i = 1; i < laneCount; i++) {
                     const offsetPx = -halfW + laneW * i;
                     const lanePts  = _offsetPolylinePx(pts, offsetPx);
                     if (lanePts.length < 2) continue;
-
                     ctx.beginPath();
                     _tracePts(ctx, lanePts);
                     ctx.stroke();
                 }
+            } else if (laneCount >= 4) {
+                // Two-way with 4+ lanes: separator between outer lanes on each side
+                const halfLanes = Math.floor(laneCount / 2);
+                const laneW     = widthPx / laneCount;
+                // Left side (negative offset) — innermost lane boundary
+                if (halfLanes > 1) {
+                    const offsetPx = -halfW + laneW;
+                    const lp = _offsetPolylinePx(pts, offsetPx);
+                    if (lp.length >= 2) { ctx.beginPath(); _tracePts(ctx, lp); ctx.stroke(); }
+                }
+                // Right side (positive offset)
+                if (halfLanes > 1) {
+                    const offsetPx = halfW - laneW;
+                    const lp = _offsetPolylinePx(pts, offsetPx);
+                    if (lp.length >= 2) { ctx.beginPath(); _tracePts(ctx, lp); ctx.stroke(); }
+                }
             }
         }
 
-        ctx.setLineDash([]);   // reset — dash state leaks across save()/restore() in some engines
+        ctx.setLineDash([]);
         ctx.restore();
     }
 
-    /**
-     * Pass 5 — Centre line.
-     * Drawn on top of everything. Controlled by style.drawCentreLine.
-     *
-     * Two-way roads: dashed yellow centre line (do-not-cross divider).
-     * One-way roads: no centre line (direction implicit from markings).
-     *
-     * @param {CanvasRenderingContext2D} ctx
-     * @private
-     */
+    // -----------------------------------------------------------------------
+    // Pass 6 — Centre line (dashed yellow on two-way roads)
+    // -----------------------------------------------------------------------
+
     _passCentreLine(ctx) {
+        const proj = this._projector;
         ctx.save();
 
-        const proj = this._projector;
-
         for (const { road, pts, widthPx, style } of this._projected) {
-            // ── Feature flag ──────────────────────────────────────────────
             if (!style.drawCentreLine) continue;
-
-            // Centre line only meaningful on two-way roads
             if (road.isOneway) continue;
 
             const dashOnPx  = proj.metresToPixels(CENTRE_DASH_LENGTH_M);
             const dashOffPx = proj.metresToPixels(CENTRE_DASH_GAP_M);
-            const lineW     = Math.max(0.8, widthPx * 0.03);
+            const lineW     = Math.max(1.0, widthPx * 0.032);
 
-            ctx.strokeStyle = 'rgba(255,220,0,0.90)';
+            ctx.strokeStyle = 'rgba(255,215,0,0.92)';
             ctx.lineWidth   = lineW;
             ctx.lineCap     = 'butt';
             ctx.lineJoin    = 'miter';
             ctx.setLineDash([dashOnPx, dashOffPx]);
 
             ctx.beginPath();
-            _tracePts(ctx, pts);   // centre line follows road centreline directly
+            _tracePts(ctx, pts);
             ctx.stroke();
         }
 
         ctx.setLineDash([]);
         ctx.restore();
     }
+
+    // -----------------------------------------------------------------------
+    // Pass 7 — Edge lines (solid white along both road edges)
+    // -----------------------------------------------------------------------
+
+    _passEdgeLines(ctx) {
+        ctx.save();
+
+        for (const { pts, widthPx, style } of this._projected) {
+            if (!style.drawMarkings) continue;
+
+            const edgePx = Math.max(EDGE_LINE_MIN_PX, widthPx * EDGE_LINE_FRACTION);
+            const halfW  = widthPx / 2;
+
+            const leftPts  = _offsetPolylinePx(pts, -(halfW - edgePx * 0.5));
+            const rightPts = _offsetPolylinePx(pts,   halfW - edgePx * 0.5);
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.80)';
+            ctx.lineWidth   = edgePx;
+            ctx.lineCap     = 'butt';
+            ctx.lineJoin    = 'miter';
+            ctx.setLineDash([]);
+
+            if (leftPts.length >= 2) {
+                ctx.beginPath(); _tracePts(ctx, leftPts); ctx.stroke();
+            }
+            if (rightPts.length >= 2) {
+                ctx.beginPath(); _tracePts(ctx, rightPts); ctx.stroke();
+            }
+        }
+
+        ctx.restore();
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 8 — Stop lines (at intersection approaches)
+    // -----------------------------------------------------------------------
+
+    _passStopLines(ctx) {
+        const proj = this._projector;
+        ctx.save();
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+        ctx.lineCap     = 'butt';
+        ctx.lineJoin    = 'miter';
+        ctx.setLineDash([]);
+
+        for (const { road, pts, widthPx, style } of this._projected) {
+            if (!style.drawMarkings) continue;
+            if (pts.length < 2) continue;
+
+            // Stop lines only on roads approaching an intersection
+            // We place one stop line near each end of the road
+            const stopDepthPx  = proj.metresToPixels(STOP_LINE_DEPTH_M);
+            const setbackPx    = proj.metresToPixels(STOP_LINE_SETBACK_M);
+            ctx.lineWidth      = stopDepthPx;
+
+            // Near the end of the road (approaching intersection)
+            _drawStopLine(ctx, pts, widthPx, setbackPx, false);
+        }
+
+        ctx.restore();
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 9 — Road arrows (forward chevrons on lane surface)
+    // -----------------------------------------------------------------------
+
+    _passArrows(ctx) {
+        const proj = this._projector;
+        const minPx = proj.metresToPixels(ARROW_HALF_LEN_M);
+        if (minPx < 4) return;  // too small to be legible
+
+        ctx.save();
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+
+        for (const { road, pts, widthPx } of this._projected) {
+            if (pts.length < 2) continue;
+            if (widthPx < proj.metresToPixels(5)) continue;  // very narrow roads skip arrows
+
+            const laneCount = road.laneCount ?? 2;
+            const laneW     = widthPx / laneCount;
+            const halfW     = widthPx / 2;
+
+            // Arrow dimensions in pixels
+            const aLen = proj.metresToPixels(ARROW_HALF_LEN_M);
+            const aWid = proj.metresToPixels(ARROW_HALF_WID_M);
+
+            if (road.isOneway) {
+                // Arrow in each lane
+                for (let lane = 0; lane < laneCount; lane++) {
+                    const laneOffset = -halfW + laneW * (lane + 0.5);
+                    _drawArrowAlongLine(ctx, pts, laneOffset, ARROW_POSITION_FRAC, aLen, aWid, false);
+                }
+            } else if (laneCount >= 2) {
+                // Two-way: arrows on the right half pointing forward,
+                //          arrows on the left half pointing forward (they're opposing lanes)
+                const halfLanes = Math.max(1, Math.floor(laneCount / 2));
+                const laneW2    = widthPx / laneCount;
+
+                // Right side (forward lanes)
+                for (let lane = 0; lane < halfLanes; lane++) {
+                    const laneOffset = laneW2 * (lane + 0.5);
+                    _drawArrowAlongLine(ctx, pts, laneOffset, ARROW_POSITION_FRAC, aLen, aWid, false);
+                }
+                // Left side (opposing lanes — reverse direction)
+                for (let lane = 0; lane < halfLanes; lane++) {
+                    const laneOffset = -laneW2 * (lane + 0.5);
+                    _drawArrowAlongLine(ctx, pts, laneOffset, 1 - ARROW_POSITION_FRAC, aLen, aWid, true);
+                }
+            }
+        }
+
+        ctx.restore();
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Private module helpers — not exported, no global state
+// Private helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Projects an array of world-space geometry points to CSS pixel points.
- * Silently skips invalid entries. Returns an empty array if fewer than
- * 2 points project successfully.
- *
- * @param  {Array<{x: number, z: number}>} geometry  Road centreline in world metres.
- * @param  {SimProjector}                  proj
- * @returns {Array<{x: number, y: number}>}           Canvas CSS pixel points.
- */
 function _projectGeometry(geometry, proj) {
     if (!Array.isArray(geometry)) return [];
-
     const pts = [];
     for (const pt of geometry) {
         if (!pt || typeof pt.x !== 'number' || typeof pt.z !== 'number') continue;
         if (!isFinite(pt.x) || !isFinite(pt.z)) continue;
-
         const p = proj.project(pt.x, pt.z);
-        // proj.project() returns { cx, cy }
         pts.push({ x: p.cx, y: p.cy });
     }
-
     return pts;
 }
 
-/**
- * Moves the canvas path cursor along a series of pixel-space points.
- * Applies an optional uniform pixel offset perpendicular to each segment
- * when offsetPx is non-zero and the polyline has ≥ 2 points.
- *
- * For performance, if offsetPx is 0 (the common case) no offset math runs.
- *
- * @param {CanvasRenderingContext2D} ctx
- * @param {Array<{x,y}>}            pts
- * @param {number}                  [offsetX=0]  Additional X pixel nudge (shadow use).
- * @param {number}                  [offsetY=0]  Additional Y pixel nudge (shadow use).
- */
 function _tracePts(ctx, pts, offsetX = 0, offsetY = 0) {
     if (pts.length === 0) return;
     ctx.moveTo(pts[0].x + offsetX, pts[0].y + offsetY);
@@ -508,77 +458,156 @@ function _tracePts(ctx, pts, offsetX = 0, offsetY = 0) {
     }
 }
 
-/**
- * Returns a new polyline offset perpendicular to the original by `offsetPx`
- * CSS pixels (positive = right of travel direction, negative = left).
- *
- * Uses per-segment normal averaging at joints to reduce corner artefacts.
- *
- * @param  {Array<{x,y}>} pts
- * @param  {number}        offsetPx
- * @returns {Array<{x,y}>}
- */
 function _offsetPolylinePx(pts, offsetPx) {
     if (pts.length < 2 || offsetPx === 0) return pts;
-
     const result = [];
-
     for (let i = 0; i < pts.length; i++) {
-        // Compute averaged normal at point i from adjacent segments
         let nx = 0, ny = 0, count = 0;
-
-        if (i > 0) {
-            const seg = _segmentNormal(pts[i - 1], pts[i]);
-            nx += seg.nx; ny += seg.ny; count++;
-        }
-        if (i < pts.length - 1) {
-            const seg = _segmentNormal(pts[i], pts[i + 1]);
-            nx += seg.nx; ny += seg.ny; count++;
-        }
-
+        if (i > 0)              { const s = _segNorm(pts[i-1], pts[i]); nx += s.nx; ny += s.ny; count++; }
+        if (i < pts.length - 1) { const s = _segNorm(pts[i],   pts[i+1]); nx += s.nx; ny += s.ny; count++; }
         if (count > 0) { nx /= count; ny /= count; }
-
-        // Re-normalise averaged normal
-        const len = Math.sqrt(nx * nx + ny * ny);
+        const len = Math.sqrt(nx*nx + ny*ny);
         if (len > 0.0001) { nx /= len; ny /= len; }
-
-        result.push({
-            x: pts[i].x + nx * offsetPx,
-            y: pts[i].y + ny * offsetPx,
-        });
+        result.push({ x: pts[i].x + nx * offsetPx, y: pts[i].y + ny * offsetPx });
     }
-
     return result;
 }
 
-/**
- * Computes the unit right-hand normal of a 2D segment (from → to).
- * "Right-hand" means: if travel direction is up, normal points right.
- *
- * @param  {{x,y}} from
- * @param  {{x,y}} to
- * @returns {{nx: number, ny: number}}
- */
-function _segmentNormal(from, to) {
-    const dx  = to.x - from.x;
-    const dy  = to.y - from.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
+function _segNorm(from, to) {
+    const dx = to.x - from.x, dy = to.y - from.y;
+    const len = Math.sqrt(dx*dx + dy*dy);
     if (len < 0.0001) return { nx: 0, ny: 0 };
-    // Right-hand normal of (dx, dy) is (dy, -dx) — rotated 90° clockwise
-    return { nx: dy / len, ny: -dx / len };
+    return { nx: dy/len, ny: -dx/len };
 }
 
-/**
- * Returns the rendering style object for a given road from the cached style map.
- * Falls back gracefully through highway type → 'service' → empty object.
- *
- * @param  {object} road       RenderRoad from roadNetworkAdapter.
- * @param  {object} roadStyle  Cached RENDER_CONSTANTS.ROAD_STYLE.
- * @returns {object}           Style definition (never null).
- */
 function _styleFor(road, roadStyle) {
     if (!roadStyle) return {};
     return roadStyle[road.highway] ?? roadStyle['service'] ?? {};
+}
+
+/**
+ * Draws a stop-line perpendicular to a polyline at a given pixel setback from one end.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Array<{x,y}>} pts   — projected road centreline
+ * @param {number} widthPx     — road width in pixels
+ * @param {number} setbackPx   — distance from end to place the line
+ * @param {boolean} fromStart  — true = setback from start, false = from end
+ */
+function _drawStopLine(ctx, pts, widthPx, setbackPx, fromStart) {
+    const n = pts.length;
+    if (n < 2) return;
+
+    // Walk from the chosen end toward the interior, accumulating arc length
+    let accumulated = 0;
+    let px = null, py = null, dx = 0, dy = 0;
+
+    if (fromStart) {
+        for (let i = 0; i < n - 1; i++) {
+            const segDx = pts[i+1].x - pts[i].x;
+            const segDy = pts[i+1].y - pts[i].y;
+            const segLen = Math.sqrt(segDx*segDx + segDy*segDy);
+            if (accumulated + segLen >= setbackPx) {
+                const t = (setbackPx - accumulated) / segLen;
+                px = pts[i].x + segDx * t;
+                py = pts[i].y + segDy * t;
+                dx = segDx / segLen;
+                dy = segDy / segLen;
+                break;
+            }
+            accumulated += segLen;
+        }
+    } else {
+        for (let i = n - 1; i > 0; i--) {
+            const segDx = pts[i-1].x - pts[i].x;
+            const segDy = pts[i-1].y - pts[i].y;
+            const segLen = Math.sqrt(segDx*segDx + segDy*segDy);
+            if (accumulated + segLen >= setbackPx) {
+                const t = (setbackPx - accumulated) / segLen;
+                px = pts[i].x + segDx * t;
+                py = pts[i].y + segDy * t;
+                // Normal direction (perpendicular to travel)
+                dx = segDx / segLen;
+                dy = segDy / segLen;
+                break;
+            }
+            accumulated += segLen;
+        }
+    }
+
+    if (px === null) return;  // road shorter than setback
+
+    // Perpendicular to travel direction
+    const nx =  dy;
+    const ny = -dx;
+    const halfW = widthPx * 0.48;
+
+    ctx.beginPath();
+    ctx.moveTo(px - nx * halfW, py - ny * halfW);
+    ctx.lineTo(px + nx * halfW, py + ny * halfW);
+    ctx.stroke();
+}
+
+/**
+ * Draws a forward-pointing arrow chevron on a polyline at a given position.
+ */
+function _drawArrowAlongLine(ctx, pts, lateralOffsetPx, posFrac, halfLenPx, halfWidPx, reverse) {
+    const n = pts.length;
+    if (n < 2) return;
+
+    // Compute total arc length
+    let totalLen = 0;
+    const segLens = [];
+    for (let i = 0; i < n - 1; i++) {
+        const dx = pts[i+1].x - pts[i].x;
+        const dy = pts[i+1].y - pts[i].y;
+        const sl = Math.sqrt(dx*dx + dy*dy);
+        segLens.push(sl);
+        totalLen += sl;
+    }
+
+    const target = totalLen * posFrac;
+    let acc = 0, ax = 0, ay = 0, tang = 0;
+
+    for (let i = 0; i < n - 1; i++) {
+        const sl = segLens[i];
+        if (acc + sl >= target) {
+            const t  = (target - acc) / sl;
+            const dx = pts[i+1].x - pts[i].x;
+            const dy = pts[i+1].y - pts[i].y;
+            ax   = pts[i].x + dx * t;
+            ay   = pts[i].y + dy * t;
+            tang = Math.atan2(dy, dx);
+            break;
+        }
+        acc += sl;
+    }
+
+    if (reverse) tang += Math.PI;
+
+    // Lateral offset (perpendicular to tang)
+    const nx = Math.sin(tang);
+    const ny = -Math.cos(tang);
+    const cx = ax + nx * lateralOffsetPx;
+    const cy = ay + ny * lateralOffsetPx;
+
+    // Draw chevron (two angled strokes meeting at a forward tip)
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(tang);
+
+    const stemLen  = halfLenPx * 0.55;
+    const tipX     = halfLenPx;
+    const baseX    = -halfLenPx * 0.4;
+
+    ctx.beginPath();
+    ctx.moveTo(baseX, -halfWidPx);
+    ctx.lineTo(tipX,  0);
+    ctx.lineTo(baseX,  halfWidPx);
+    ctx.lineTo(baseX + stemLen * 0.3, 0);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
 }
 
 // ---------------------------------------------------------------------------
@@ -586,5 +615,4 @@ function _styleFor(road, roadStyle) {
 // ---------------------------------------------------------------------------
 
 window.RoadRenderer = RoadRenderer;
-
 console.info('[RoadRenderer] module loaded');

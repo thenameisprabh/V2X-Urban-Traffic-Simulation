@@ -119,6 +119,13 @@ class IntersectionManager:
                         "duration": self._effective_duration(intersection_id, phase_idx)
                     }
         return None
+
+    def get_signal_state(self, intersection_id):
+        """Return the current signal state for an intersection."""
+        phase_info = self.get_phase_info(intersection_id)
+        if phase_info is not None:
+            return phase_info.get("phase_state", "RED")
+        return "RED"
     
     def reset_intersection(self, intersection_id):
         """Reset a specific intersection to initial state"""

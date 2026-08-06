@@ -143,13 +143,8 @@ class SimulationEngine:
                 # ── end Phase 11 yield ───────────────────────────────────────
 
                 vehicle.update(dt)
-
-                # Keep vehicles active after they pass the normalized lane end
-                # so they remain visible in the live state instead of being
-                # dropped from the simulation set.
-                if vehicle.position >= 1.0:
-                    vehicle.position = vehicle.position % 1.0
-
+                if vehicle.position > 1.0:
+                    vehicle.position = 0.0  # recycle: wrap back to lane start
                 updated_vehicles.append(vehicle)
             except Exception as e:
                 print(f"   ❌ Vehicle update error: {e}")
@@ -187,11 +182,11 @@ class SimulationEngine:
 
     def clear(self):
         """Clear all vehicles and reset simulation."""
-        self.vehicles       = []
-        self.tick           = 0
-        self.time           = 0.0
-        self._msg_counter   = 0
-        self._map_cache     = {}
+        self.vehicles = []
+        self.tick = 0
+        self.time = 0.0
+        self._msg_counter = 0
+        self._map_cache = {}
         self._map_emit_tick = {}
 
     # ------------------------------------------------------------------ #
@@ -267,48 +262,30 @@ class SimulationEngine:
             "payload":      {}
         }
 
-    def _generate_spat(self, intersection, nearby_uids=None):
+    def _generate_spat(self, intersection, signal_state, nearby_uids=None):
         """
         Signal Phase and Timing message — one per intersection per tick.
-        Reads live phase state from IntersectionManager.
-        Returns None if intersection has no phases configured.
-        receiver_uid is the list of vehicles within SPAT_RANGE_M of the
-        intersection, or None when no vehicles are nearby.
+        receiver_uid is the list of vehicles within SPAT_RANGE_M, or None.
         """
-        phase_info = self.intersection_manager.get_phase_info(intersection.id)
-        if phase_info is None:
-            return None
-
-        remaining_time = max(
-            0.0,
-            round(phase_info["duration"] - phase_info["elapsed_time"], 2)
-        )
-
         pos = getattr(intersection, 'position', [0.0, 0.0])
-
         return {
             "id":           self._next_msg_id(),
             "tick":         self.tick,
             "ttl_ticks":    6,
             "type":         "SPAT",
-            "sender_uid":   f"signal_{intersection.id}",
+            "sender_uid":   f"spat_{intersection.id}",
             "receiver_uid": nearby_uids,
             "pos":          [round(pos[0], 3), round(pos[1], 3)],
             "range_m":      SPAT_RANGE_M,
             "payload": {
-                "signal_id":       intersection.id,
                 "intersection_id": intersection.id,
-                "phase_index":     phase_info["phase_index"],
-                "phase_name":      phase_info["phase_name"],
-                "phase_state":     phase_info["phase_state"],
-                "remaining_time":  remaining_time,
-                "duration":        phase_info["duration"]
+                "signal_state":    signal_state,
             }
         }
 
     def _generate_map(self, intersection):
         """
-        MAP message — static intersection topology.
+        MAP message — topology broadcast.
         Transmitted infrequently (every MAP_INTERVAL_TICKS ticks).
         Always broadcast — receiver_uid stays None.
         Returns None when outside transmission window.
@@ -362,7 +339,6 @@ class SimulationEngine:
         Intersection Collision Alert — emitted when two vehicles are
         simultaneously within ICA_RANGE_M of the same intersection,
         indicating a potential conflict.
-
         sender_uid  : the first vehicle of the converging pair
         receiver_uid: the second vehicle (point-to-point, not a list)
         pos         : midpoint between the two vehicles
@@ -405,8 +381,8 @@ class SimulationEngine:
         message_list      = []
         vehicle_positions = {}   # uid → [x, z]  — shared by all range checks
 
-        # ── Pass 1: resolve world positions for every active vehicle ─────
-        for v in self.vehicles:
+        # ── Pass 1: resolve world positions for every vehicle ─────────────
+        for v in self.vehicles[:20]:
             lane     = self.road_network.get_lane(v.lane_id)
             pos      = [0.0, 0.0]
             rotation = 0.0
@@ -437,50 +413,41 @@ class SimulationEngine:
             })
 
         # ── 1 + 2: Vehicle messages (BSM + EVA) ───────────────────────────
-        for v in self.vehicles:
+        for v in self.vehicles[:20]:
             pos = vehicle_positions[v.id]
 
-            # BSM — targeted to vehicles within BSM_RANGE_M
-            nearby_bsm = self._vehicles_within_range(
+            # BSM — every vehicle broadcasts its position
+            nearby = self._vehicles_within_range(
                 pos, BSM_RANGE_M, vehicle_positions, exclude_uid=v.id
             )
-            message_list.append(self._generate_bsm(v.id, pos, nearby_bsm))
+            message_list.append(self._generate_bsm(v.id, pos, nearby))
 
-            # EVA — targeted to all vehicles within EVA_RANGE_M
-            if v.type == 'emergency':
+            # EVA — emergency vehicles only
+            if getattr(v, 'type', None) == 'emergency':
                 nearby_eva = self._vehicles_within_range(
                     pos, EVA_RANGE_M, vehicle_positions, exclude_uid=v.id
                 )
                 message_list.append(self._generate_eva(v.id, pos, nearby_eva))
 
-        # ── 3 + 4: Infrastructure messages (SPAT + MAP) ───────────────────
+        # ── 3 + 4 + 5: Infrastructure messages (SPAT, MAP, ICA) ──────────
         for intersection in self.road_network.intersections:
             ipos = getattr(intersection, 'position', [0.0, 0.0])
 
-            # SPAT — targeted to vehicles within SPAT_RANGE_M of intersection
-            nearby_spat = self._vehicles_within_range(
+            # SPAT
+            signal_state = self.intersection_manager.get_signal_state(intersection.id)
+            nearby_spat  = self._vehicles_within_range(
                 ipos, SPAT_RANGE_M, vehicle_positions
             )
-            spat = self._generate_spat(intersection, nearby_spat)
-            if spat is not None:
-                message_list.append(spat)
+            message_list.append(
+                self._generate_spat(intersection, signal_state, nearby_spat)
+            )
 
-            # MAP — always broadcast, receiver_uid stays None
+            # MAP (throttled to every MAP_INTERVAL_TICKS)
             map_msg = self._generate_map(intersection)
-            if map_msg is not None:
-                self._map_cache[intersection.id] = map_msg
+            if map_msg:
+                message_list.append(map_msg)
 
-            cached = self._map_cache.get(intersection.id)
-            if cached is not None:
-                age = self.tick - cached['tick']
-                if age < MAP_TTL_TICKS:
-                    message_list.append(cached)
-                else:
-                    self._map_cache.pop(intersection.id, None)
-
-        # ── 5: ICA — pairwise convergence check per intersection ──────────
-        for intersection in self.road_network.intersections:
-            ipos     = getattr(intersection, 'position', [0.0, 0.0])
+            # ICA — detect pairs of vehicles converging on this intersection
             at_inter = self._vehicles_within_range(
                 ipos, ICA_RANGE_M, vehicle_positions
             )
