@@ -5,7 +5,7 @@
  * Execution order:
  *   1. Wait for DOMContentLoaded
  *   2. Fetch /api/road-network → roadNetworkAdapter → RenderNetwork
- *   3. Load OSMSupplementProvider (empty datasets in Phase 1B — correct)
+ *   3. Load OSMSupplementProvider
  *   4. Construct SimProjector, MapLayerManager, ViewModeController, MapInteraction
  *   5. Register all layer renderers
  *   6. Initialize MapLayerManager → starts render loop
@@ -80,6 +80,9 @@ async function _boot() {
     console.info('[Bootstrap] Step 2 ✓ — road network fetched');
 
     // ── Step 3: Adapt to RenderNetwork ─────────────────────────────────────
+    if (typeof window.roadNetworkAdapter !== 'function') {
+        throw new Error('[Bootstrap] roadNetworkAdapter not loaded — check script order');
+    }
     const rawNetwork = window.roadNetworkAdapter(apiJson);
 
     if (!rawNetwork || typeof rawNetwork !== 'object') {
@@ -90,12 +93,12 @@ async function _boot() {
     // RoadRenderer reads network.roads — this must be preserved here.
     const network = {
         ...rawNetwork,
-        roads         : Array.isArray(rawNetwork.roads) ? [...rawNetwork.roads] : (Array.isArray(rawNetwork.ways) ? [...rawNetwork.ways] : []),
-        intersections : Array.isArray(rawNetwork.intersections) ? rawNetwork.intersections : [],
-        signals       : Array.isArray(rawNetwork.signals)       ? rawNetwork.signals       : [],
-        sidewalks     : Array.isArray(rawNetwork.sidewalks)     ? rawNetwork.sidewalks     : [],
-        crosswalks    : Array.isArray(rawNetwork.crosswalks)    ? rawNetwork.crosswalks    : [],
-        spawnPoints   : Array.isArray(rawNetwork.spawnPoints)   ? rawNetwork.spawnPoints   : [],
+        roads         : Array.isArray(rawNetwork.roads)         ? [...rawNetwork.roads]         : (Array.isArray(rawNetwork.ways) ? [...rawNetwork.ways] : []),
+        intersections : Array.isArray(rawNetwork.intersections) ? rawNetwork.intersections       : [],
+        signals       : Array.isArray(rawNetwork.signals)       ? rawNetwork.signals             : [],
+        sidewalks     : Array.isArray(rawNetwork.sidewalks)     ? rawNetwork.sidewalks           : [],
+        crosswalks    : Array.isArray(rawNetwork.crosswalks)    ? rawNetwork.crosswalks          : [],
+        spawnPoints   : Array.isArray(rawNetwork.spawnPoints)   ? rawNetwork.spawnPoints         : [],
         bounds        : rawNetwork.bounds || { min_x: 0, max_x: 800, min_z: 0, max_z: 800 },
         meta          : rawNetwork.meta   || {},
     };
@@ -117,10 +120,7 @@ async function _boot() {
     }
     const supplement = new window.OSMSupplementProvider(SUPPLEMENT_PATHS);
     await supplement.load();
-    console.info('[Bootstrap] Step 4 ✓ — supplement loaded (buildings:',
-        supplement.getBuildings().length,
-        'vegetation:', supplement.getVegetation().length,
-        'water:', supplement.getWater().length, ')');
+    console.info('[Bootstrap] Step 4 ✓ — supplement loaded');
 
     // ── Step 5: Construct SimProjector and fit to world bounds ─────────────
     if (typeof window.SimProjector !== 'function') {
@@ -192,7 +192,7 @@ async function _boot() {
         console.info('[Bootstrap] Step 9b ✓ — window.updateTrafficLights wired to TrafficSignalRenderer');
     } else {
         window.updateTrafficLights = () => {};
-        console.warn('[Bootstrap] Step 9b ⚠ — TrafficSignalRenderer.updateSignals not found; updateTrafficLights is a no-op');
+        console.warn('[Bootstrap] Step 9b ⚠ — TrafficSignalRenderer.updateSignals not found');
     }
 
     // ── Step 9c: Wire V2V message update hook ──────────────────────────────
@@ -259,6 +259,8 @@ async function _boot() {
 
 /**
  * Registers all layer renderers in render order (bottom → top).
+ * Layers whose constructor is not yet defined are silently skipped.
+ *
  * @param {MapLayerManager} mgr
  * @param {object} network
  * @param {object} supplement
